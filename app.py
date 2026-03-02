@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -14,6 +15,8 @@ import copy
 
 conn = sqlite3.connect("school.db", check_same_thread=False)
 c = conn.cursor()
+import os
+st.write("Current Folder:", os.getcwd())
 
 
 def clean_name(x):
