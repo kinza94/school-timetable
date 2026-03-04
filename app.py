@@ -1635,6 +1635,7 @@ def build_principal_matrix():
     df = pd.DataFrame(rows)
 
     df.loc[df['Day'].duplicated(), 'Day'] = ""
+    df["P. No."] = df["P. No."].astype(str)
 
     return df
 
