@@ -775,14 +775,30 @@ def basic_auto_fill():
                 # PICK BEST SLOT
                 # ===============================
 
-                if not valid_slots:
+                    if not valid_slots:
 
-                    swapped = try_swap(section, subject, assigned_teacher)
+                        swapped = try_swap(section, subject, assigned_teacher)
 
-                    if not swapped:
-                        print(f"⚠ Could not place {subject}")
-                        filled = count
-                        break
+                        if swapped:
+                            filled += 1
+                            continue
+
+                        # fallback: try ANY free slot ignoring distribution
+                        for day in DAYS:
+                            for period in get_periods(day):
+
+                                if period == "Lunch":
+                                    continue
+
+                                if st.session_state.timetable[section][day][period]["subject"] == "":
+                                    if not teacher_busy(assigned_teacher, day, period):
+                                        apply_assignment(section, subject, assigned_teacher, day, period)
+                                        filled += 1
+                                        valid_slots = []
+                                        break
+
+                            if filled >= count:
+                                break
                     else:
                         filled += 1
                         continue
