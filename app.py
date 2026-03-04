@@ -369,8 +369,17 @@ def find_swap_option(section, teacher, subject, day, period):
 # ==================================================
 # ---------------- CREATE TIMETABLE ----------------
 # ==================================================
+
 def can_assign(section, subject, teacher, day, period):
     teacher = clean_name(teacher)
+    # ---- SUBJECT SAME DAY REPEAT BLOCK ----
+
+    weekly_required = st.session_state.subject_config.get(section, {}).get(subject, 0)
+
+    if weekly_required <= 6:
+        for p in get_periods(day):
+            if st.session_state.timetable[section][day][p]["subject"] == subject:
+                return False
     if teacher not in teacher_day_load:
         return False
     periods = get_periods(day)
