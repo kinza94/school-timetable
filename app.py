@@ -714,8 +714,18 @@ def basic_auto_fill():
 
                 for day in days:
 
-                    if subject_day_count[day] >= 2:
+                    # HARD RULE: subject cannot repeat same day
+                    if subject_day_count[day] >= 1:
                         continue
+                    for day in days:
+
+                        # HARD RULE: subjects with ≤6 weekly periods cannot repeat same day
+                        if count <= 6 and subject_day_count[day] >= 1:
+                            continue
+
+                        # subjects with >6 can appear twice max
+                        if count > 6 and subject_day_count[day] >= 2:
+                            continue
 
                     periods = get_periods(day).copy()
                     random.shuffle(periods)
@@ -1331,7 +1341,7 @@ if menu == "Configuration":
 def validate_no_three_consecutive():
     return []
 
-    if menu == "Generate":
+if menu == "Generate":
 
         if st.button("Generate Timetable", key="generate_main"):
 
@@ -1344,6 +1354,8 @@ def validate_no_three_consecutive():
 
                 assign_class_teacher_priority()
                 basic_auto_fill()
+
+
 
                 score = calculate_fitness()
 
