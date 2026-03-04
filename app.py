@@ -370,6 +370,9 @@ def find_swap_option(section, teacher, subject, day, period):
 # ---------------- CREATE TIMETABLE ----------------
 # ==================================================
 def can_assign(section, subject, teacher, day, period):
+    teacher = clean_name(teacher)
+    if teacher not in teacher_day_load:
+        return False
     periods = get_periods(day)
     idx = periods.index(period)
 
@@ -419,6 +422,7 @@ def can_assign(section, subject, teacher, day, period):
 # ==================================================
 
 def apply_assignment(section, subject, teacher, day, period):
+    teacher = clean_name(teacher)
     st.session_state.timetable[section][day][period]["subject"] = subject
     st.session_state.timetable[section][day][period]["teacher"] = teacher
 
@@ -453,6 +457,9 @@ def create_empty_timetable():
     double_used.clear()
 
     for t in st.session_state.teachers:
+
+        t = clean_name(t)
+
         teacher_day_load[t] = {}
         teacher_timeline[t] = {}
 
