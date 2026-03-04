@@ -650,8 +650,7 @@ def basic_auto_fill():
         subjects = st.session_state.subject_config[section]
         maths_double_done = False
 
-        subject_items = list(subjects.items())
-        random.shuffle(subject_items)
+        subject_items = sorted(subjects.items(), key=lambda x: -x[1])
 
         for subject, count in subject_items:
 
