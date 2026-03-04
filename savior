@@ -1,8 +1,6 @@
 
 import streamlit as st
 import pandas as pd
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 import sqlite3
 import json
 from docx import Document
@@ -1382,23 +1380,22 @@ def validate_no_three_consecutive():
     # ===============================
 
 
-if st.session_state.get("role") == "admin":
+consecutive_issues = validate_no_three_consecutive()
+for issue in consecutive_issues:
+    st.warning(issue)
 
-    consecutive_issues = validate_no_three_consecutive()
-    for issue in consecutive_issues:
-        st.warning(issue)
+distribution_issues = validate_teacher_distribution()
+for issue in distribution_issues:
+    st.warning(issue)
 
-    distribution_issues = validate_teacher_distribution()
-    for issue in distribution_issues:
-        st.warning(issue)
+friday_issues = validate_friday_load()
+for issue in friday_issues:
+    st.info(issue)
 
-    friday_issues = validate_friday_load()
-    for issue in friday_issues:
-        st.info(issue)
+maths_issues = validate_maths_consecutive()
+for issue in maths_issues:
+    st.info(issue)
 
-    maths_issues = validate_maths_consecutive()
-    for issue in maths_issues:
-        st.info(issue)
 
 def get_clash_slots():
     clashes = set()
@@ -1590,190 +1587,6 @@ def export_class_timetable_pdf(section):
     doc.build(elements)
 
     return file_path
-
-
-###-----------
-#DEF EXPORT ALL TEACHER VIEW
-#----------------
-def build_principal_matrix():
-
-    rows = []
-
-    for day in DAYS:
-
-        periods = get_periods(day)
-        period_no = 0
-
-        for period in periods:
-
-            if period != "Lunch":
-                period_no += 1
-
-            row = {
-                "Day": day,
-                "P. No.": "" if period == "Lunch" else period_no,
-                "Bell Timing": MON_THU_TIMES.get(period,"") if day!="Friday"
-                                else FRIDAY_TIMES.get(period,"")
-            }
-
-            for teacher in st.session_state.teachers:
-
-                value = ""
-
-                for sec in st.session_state.timetable:
-
-                    entry = st.session_state.timetable[sec][day][period]
-
-                    if entry["teacher"] == teacher:
-                        value = f"{sec} {entry['subject']}"
-                        break
-
-                row[teacher] = value
-
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-
-    df.loc[df['Day'].duplicated(), 'Day'] = ""
-
-    return df
-
-#-------- word view principal matrix------------
-#----------------------------------------------
-#-------------------------------------------
-from docx import Document
-from docx.enum.section import WD_ORIENT
-from docx.shared import Inches
-
-def export_timetable_word(df):
-
-    file = "school_timetable.docx"
-
-    doc = Document()
-
-    # landscape page
-    section = doc.sections[-1]
-    section.orientation = WD_ORIENT.LANDSCAPE
-    section.page_width, section.page_height = section.page_height, section.page_width
-
-    days = ["Monday","Tuesday","Wednesday","Thursday","Friday"]
-    rows_per_day = 9
-
-    for i, day in enumerate(days):
-
-        day_df = df.iloc[i*rows_per_day:(i+1)*rows_per_day]
-
-        doc.add_heading(day, level=1)
-
-        rows = len(day_df) + 1
-        cols = len(day_df.columns)
-
-        table = doc.add_table(rows=rows, cols=cols)
-        table.style = "Table Grid"
-
-        # header
-        for j, col in enumerate(day_df.columns):
-            table.rows[0].cells[j].text = str(col)
-
-        # data
-        for r, (_, row) in enumerate(day_df.iterrows(), start=1):
-            for c, val in enumerate(row):
-                table.rows[r].cells[c].text = str(val)
-
-        doc.add_paragraph("")
-
-    doc.save(file)
-
-    return file
-######### WORD BUTTON
-df = build_principal_matrix()
-
-file = export_timetable_word(df)
-
-with open(file,"rb") as f:
-    st.download_button(
-        "Download Word Timetable",
-        f,
-        file_name="school_timetable.docx"
-    )
-
-
-################## export excel PM-----------------------
-import pandas as pd
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.utils import get_column_letter
-
-def export_excel(df):
-
-    file = "School_Timetable.xlsx"
-
-    with pd.ExcelWriter(file, engine="openpyxl") as writer:
-
-        df.to_excel(writer, sheet_name="Timetable", index=False)
-
-        wb = writer.book
-        ws = writer.sheets["Timetable"]
-
-        # Freeze header
-        ws.freeze_panes = "A2"
-
-        # Header style
-        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-
-        for cell in ws[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.fill = header_fill
-
-        # Borders
-        border = Border(
-            left=Side(style="thin"),
-            right=Side(style="thin"),
-            top=Side(style="thin"),
-            bottom=Side(style="thin")
-        )
-
-        for row in ws.iter_rows():
-            for cell in row:
-                cell.border = border
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        # Column width auto adjust
-        for col in ws.columns:
-            max_length = 0
-            column = col[0].column
-            letter = get_column_letter(column)
-
-            for cell in col:
-                try:
-                    if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-                except:
-                    pass
-
-            ws.column_dimensions[letter].width = max_length + 4
-
-        # Highlight Lunch
-        lunch_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-
-        for row in range(2, ws.max_row + 1):
-            if ws.cell(row=row, column=2).value == "":
-                for col in range(1, ws.max_column + 1):
-                    ws.cell(row=row, column=col).fill = lunch_fill
-
-    return file
-###button
-df = build_principal_matrix()
-
-file = export_excel(df)
-
-with open(file, "rb") as f:
-    st.download_button(
-        "Download Excel Timetable",
-        f,
-        file_name="School_Timetable.xlsx"
-    )
-
 
 # ==================================================
 # ---------------- CLASS VIEW ----------------------
@@ -2083,9 +1896,3 @@ if menu == "Analytics":
 
         st.dataframe(styled_df, use_container_width=True)
         st.bar_chart(df.set_index("Teacher"))
-
-        st.subheader("School Master Timetable")
-
-        df_master = build_principal_matrix()
-
-        st.dataframe(df_master, use_container_width=True)
