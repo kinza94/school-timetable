@@ -450,17 +450,19 @@ def count_teacher_periods(teacher):
 
 
 def teacher_busy(teacher, day, period):
+    t_key = clean(teacher)
     for sec in st.session_state.timetable:
-        if st.session_state.timetable[sec][day][period]["teacher"] == teacher:
+        if clean(st.session_state.timetable[sec][day][period]["teacher"]) == t_key:
             return True
     return False
 
 
 def teacher_daily_load(teacher, day):
+    t_key = clean(teacher)
     return sum(
         1 for sec in st.session_state.timetable
         for period in get_periods(day)
-        if st.session_state.timetable[sec][day][period]["teacher"] == teacher
+        if clean(st.session_state.timetable[sec][day][period]["teacher"]) == t_key
     )
 
 
@@ -714,11 +716,17 @@ def can_assign(section, subject, teacher, day, period):
         return False
 
     # ── C2: teacher daily cap ─────────────────────────────
-    if teacher_day_load[teacher][day] >= 6:
+    # Normalize key – if teacher somehow not in load dict, treat as free (safe default)
+    t_key = clean(teacher)
+    if t_key not in teacher_day_load:
+        # Teacher exists in assignment but not yet initialised – add them now
+        teacher_day_load[t_key] = {d: 0 for d in DAYS}
+        teacher_timeline[t_key] = {d: [0] * len(get_periods(d)) for d in DAYS}
+    if teacher_day_load[t_key][day] >= 6:
         return False
 
     # ── C3 + C4: consecutive checks (Lunch = hard break) ──
-    t_streak = teacher_consecutive_streak(teacher, day, idx)
+    t_streak = teacher_consecutive_streak(t_key, day, idx)
     if t_streak >= 4:          # C3 – hard block
         return False
     # C4 (3-consecutive) is soft – allowed but penalised in fitness
@@ -802,12 +810,19 @@ def can_assign(section, subject, teacher, day, period):
 # ── State writer ──────────────────────────────────────────
 
 def apply_assignment(section, subject, teacher, day, period):
+    t_key = clean(teacher)   # normalise casing
     st.session_state.timetable[section][day][period]["subject"] = subject
-    st.session_state.timetable[section][day][period]["teacher"] = teacher
+    st.session_state.timetable[section][day][period]["teacher"] = t_key
 
     idx = get_periods(day).index(period)
-    teacher_day_load[teacher][day]    += 1
-    teacher_timeline[teacher][day][idx] = 1
+
+    # Auto-init if teacher was not in session_state.teachers at creation time
+    if t_key not in teacher_day_load:
+        teacher_day_load[t_key] = {d: 0 for d in DAYS}
+        teacher_timeline[t_key] = {d: [0] * len(get_periods(d)) for d in DAYS}
+
+    teacher_day_load[t_key][day]    += 1
+    teacher_timeline[t_key][day][idx] = 1
 
     # Track IX-X double usage
     if is_ix_x_double(subject):
@@ -839,15 +854,17 @@ def create_empty_timetable():
     teacher_timeline.clear()
     double_used.clear()
 
+    # Always store teacher keys in UPPER so lookups never KeyError
     for t in st.session_state.teachers:
-        teacher_day_load[t] = {d: 0 for d in DAYS}
-        teacher_timeline[t] = {d: [0] * len(get_periods(d)) for d in DAYS}
+        t_key = clean(t)
+        teacher_day_load[t_key] = {d: 0 for d in DAYS}
+        teacher_timeline[t_key] = {d: [0] * len(get_periods(d)) for d in DAYS}
 
     for section in st.session_state.sections:
         timetable[section] = {
             day: {
                 period: {"subject": "", "teacher": ""}
-                for period in get_periods(day)      # Lunch is included as a slot (always empty)
+                for period in get_periods(day)
             }
             for day in DAYS
         }
@@ -1186,15 +1203,12 @@ def emergency_backfill():
                         break
 
                 if not placed:
-                    # Relax: try any subject ignoring quota (fill with what fits)
+                    # Relax: ignore quota but still pass can_assign so state stays consistent
                     for subject, _count in st.session_state.subject_config.get(section, {}).items():
                         assigned_teacher = _find_teacher(section, subject)
                         if not assigned_teacher:
                             continue
-                        if teacher_busy(assigned_teacher, day, period):
-                            continue
-                        # Hard-only check (skip soft rules)
-                        if not teacher_busy(assigned_teacher, day, period):
+                        if can_assign(section, subject, assigned_teacher, day, period):
                             apply_assignment(section, subject, assigned_teacher, day, period)
                             break
 
@@ -1202,10 +1216,10 @@ def emergency_backfill():
 # ── Private helper ────────────────────────────────────────
 
 def _find_teacher(section, subject):
-    """Return the first teacher assigned to teach subject in section, or None."""
+    """Return the teacher (uppercase-normalised) assigned to subject in section, or None."""
     for teacher, sec_data in st.session_state.teacher_assignment.items():
         if section in sec_data and subject in sec_data[section]:
-            return teacher
+            return clean(teacher)   # always return UPPER so it matches teacher_day_load keys
     return None
 
 
