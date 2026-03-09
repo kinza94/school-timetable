@@ -82,6 +82,7 @@ styleN = styles_pdf["Normal"]
 teacher_day_load = {}
 teacher_timeline = {}
 double_used = {}
+subject_remaining = {}   # {(section, subject): remaining_count}  — single source of truth for quotas
 
 # ==================================================
 # ---------------- HELPERS -------------------------
@@ -607,6 +608,23 @@ def subject_count_total(section, subject):
     return sum(subject_count_in_day(section, subject, day) for day in DAYS)
 
 
+def quota_remaining(section, subject):
+    """
+    Fast O(1) quota check.  Returns how many more periods of `subject`
+    are still needed in `section` this week.  Uses the subject_remaining
+    dict which is decremented by every apply_assignment call.
+    Falls back to computing from the timetable if the key is missing
+    (e.g. called before generate, or after manual edits).
+    """
+    key = (section, subject)
+    if key in subject_remaining:
+        return subject_remaining[key]
+    # Fallback: compute from timetable (slower but always correct)
+    quota = st.session_state.subject_config.get(section, {}).get(subject, 0)
+    placed = subject_count_total(section, subject)
+    return max(0, quota - placed)
+
+
 def math_double_day(section):
     """Return the day that already has a Math double for this section, or None."""
     for day in DAYS:
@@ -825,6 +843,11 @@ def apply_assignment(section, subject, teacher, day, period):
     teacher_day_load[t_key][day]    += 1
     teacher_timeline[t_key][day][idx] = 1
 
+    # Decrement quota tracker — the authoritative remaining count
+    key = (section, subject)
+    if key in subject_remaining:
+        subject_remaining[key] = max(0, subject_remaining[key] - 1)
+
     # Track IX-X double usage
     if is_ix_x_double(subject):
         periods = [p for p in get_periods(day) if p != "Lunch"]
@@ -854,6 +877,12 @@ def create_empty_timetable():
     teacher_day_load.clear()
     teacher_timeline.clear()
     double_used.clear()
+    subject_remaining.clear()
+
+    # Initialise quota tracker — every (section, subject) starts at its full weekly count
+    for section, subj_map in st.session_state.subject_config.items():
+        for subject, quota in subj_map.items():
+            subject_remaining[(section, subject)] = quota
 
     # Always store teacher keys in UPPER so lookups never KeyError
     for t in st.session_state.teachers:
@@ -923,7 +952,7 @@ def assign_daily_singles():
     as a single period.  Placed early so later phases cannot steal the slot.
     """
     for section in st.session_state.subject_config:
-        for subject, weekly_quota in st.session_state.subject_config[section].items():
+        for subject in list(st.session_state.subject_config[section].keys()):
             if not is_daily_single(subject):
                 continue
 
@@ -932,17 +961,18 @@ def assign_daily_singles():
                 continue
 
             for day in DAYS:
-                # ── Quota gate: never exceed weekly limit ──────────────
-                if subject_count_total(section, subject) >= weekly_quota:
-                    break
+                if quota_remaining(section, subject) <= 0:
+                    break                       # weekly quota fully used — stop
 
                 if subject_count_in_day(section, subject, day) >= 1:
-                    continue            # already placed today
+                    continue                    # already placed today
 
                 candidates = [p for p in get_periods(day) if p != "Lunch"]
                 random.shuffle(candidates)
 
                 for period in candidates:
+                    if quota_remaining(section, subject) <= 0:
+                        break
                     if st.session_state.timetable[section][day][period]["subject"] != "":
                         continue
                     if can_assign(section, subject, assigned_teacher, day, period):
@@ -968,9 +998,8 @@ def assign_math():
 
             # ── Step A: place the one double (costs 2 quota slots) ──
             double_placed = False
-            remaining = count - subject_count_total(section, subject)
 
-            if remaining >= 2:          # only attempt double if quota allows it
+            if quota_remaining(section, subject) >= 2:   # need room for 2 periods
                 candidate_days = DAYS.copy()
                 random.shuffle(candidate_days)
 
@@ -979,7 +1008,8 @@ def assign_math():
                     for i in range(len(slots) - 1):
                         p1, p2 = slots[i], slots[i + 1]
                         if (
-                            st.session_state.timetable[section][day][p1]["subject"] == ""
+                            quota_remaining(section, subject) >= 2
+                            and st.session_state.timetable[section][day][p1]["subject"] == ""
                             and st.session_state.timetable[section][day][p2]["subject"] == ""
                             and can_assign(section, subject, assigned_teacher, day, p1)
                             and can_assign(section, subject, assigned_teacher, day, p2)
@@ -991,16 +1021,18 @@ def assign_math():
                     if double_placed:
                         break
 
-            # ── Step B: single Math on every day that lacks it ────────
+            # ── Step B: single Math on every remaining day ────────────
             for day in DAYS:
+                if quota_remaining(section, subject) <= 0:
+                    break                           # quota exhausted — stop
                 if subject_count_in_day(section, subject, day) >= 1:
-                    continue
-                if subject_count_total(section, subject) >= count:   # quota full — stop
-                    break
+                    continue                        # already placed today
 
                 candidates = [p for p in get_periods(day) if p != "Lunch"]
                 random.shuffle(candidates)
                 for period in candidates:
+                    if quota_remaining(section, subject) <= 0:
+                        break
                     if st.session_state.timetable[section][day][period]["subject"] != "":
                         continue
                     if can_assign(section, subject, assigned_teacher, day, period):
@@ -1022,16 +1054,14 @@ def assign_ix_x_doubles():
         if not is_ix_x:
             continue
 
-        for subject, ix_quota in st.session_state.subject_config[section].items():
+        for subject in list(st.session_state.subject_config[section].keys()):
             if not is_ix_x_double(subject):
                 continue
             if double_used.get((section, subject), False):
-                continue        # double already placed this run
+                continue                         # double already placed this run
 
-            # Double costs 2 — only attempt if quota has room for 2 more
-            already_placed = subject_count_total(section, subject)
-            if ix_quota - already_placed < 2:
-                continue
+            if quota_remaining(section, subject) < 2:
+                continue                         # need room for at least 2 periods
 
             assigned_teacher = _find_teacher(section, subject)
             if not assigned_teacher:
@@ -1046,7 +1076,8 @@ def assign_ix_x_doubles():
                 for i in range(len(slots) - 1):
                     p1, p2 = slots[i], slots[i + 1]
                     if (
-                        st.session_state.timetable[section][day][p1]["subject"] == ""
+                        quota_remaining(section, subject) >= 2
+                        and st.session_state.timetable[section][day][p1]["subject"] == ""
                         and st.session_state.timetable[section][day][p2]["subject"] == ""
                         and can_assign(section, subject, assigned_teacher, day, p1)
                         and can_assign(section, subject, assigned_teacher, day, p2)
@@ -1066,9 +1097,9 @@ def calculate_fitness():
 
     # ── Hard-ish: quota violations (each missing or excess period = -200) ──
     for section, config in st.session_state.subject_config.items():
-        for subject, quota in config.items():
-            placed = subject_count_total(section, subject)
-            deviation = abs(placed - quota)
+        for subject in config:
+            # quota_remaining > 0 means under-quota; < 0 impossible (hard wall)
+            deviation = quota_remaining(section, subject)   # 0 = perfect
             score -= deviation * 200   # very steep penalty drives best-of-15 selection
 
     # ── Soft: consecutive, distribution, friday balance ──
@@ -1121,37 +1152,37 @@ def try_swap(section, subject, teacher):
 
 def basic_auto_fill():
     """
-    C11 – Fill all remaining slots for subjects not handled by phases 2-4.
-    Priority subjects (daily-singles, math, IX-X doubles) are skipped here
-    because they were already placed.
+    Fill remaining quota for ALL subjects.
+    Subjects are processed in order of most-remaining-quota first so
+    harder-to-place subjects get first pick of empty slots.
+    This phase also handles any daily-singles / math / IX-X that earlier
+    phases left under-quota.
     """
     sections = list(st.session_state.subject_config.keys())
     random.shuffle(sections)
 
     for section in sections:
-        subject_items = list(st.session_state.subject_config[section].items())
-        random.shuffle(subject_items)
+        # Sort subjects by remaining quota descending — biggest deficit first
+        subject_items = sorted(
+            st.session_state.subject_config[section].items(),
+            key=lambda kv: quota_remaining(section, kv[0]),
+            reverse=True
+        )
 
         for subject, count in subject_items:
-
-            # Skip subjects managed by earlier phases
-            if is_daily_single(subject) or is_math(subject) or is_ix_x_double(subject):
-                continue
-
             assigned_teacher = _find_teacher(section, subject)
             if not assigned_teacher:
                 continue
 
-            filled            = subject_count_total(section, subject)
-            subject_day_count = {d: subject_count_in_day(section, subject, d) for d in DAYS}
-
-            while filled < count:
+            while quota_remaining(section, subject) > 0:
                 valid_slots = []
                 days = DAYS.copy()
                 random.shuffle(days)
 
                 for day in days:
-                    if subject_day_count[day] >= 2:
+                    # Limit to 2 occurrences per day for non-double subjects
+                    day_max = 2
+                    if subject_count_in_day(section, subject, day) >= day_max:
                         continue
 
                     candidates = get_periods(day).copy()
@@ -1173,66 +1204,67 @@ def basic_auto_fill():
                 if not valid_slots:
                     swapped = try_swap(section, subject, assigned_teacher)
                     if swapped:
-                        filled += 1
-                        subject_day_count = {d: subject_count_in_day(section, subject, d) for d in DAYS}
+                        # subject_remaining was decremented inside apply_assignment via try_swap
+                        pass
                     else:
-                        print(f"⚠  Could not place all periods of {subject} in {section}")
-                        break
+                        break   # genuinely impossible — move on
                     continue
 
                 best_day, best_period = random.choice(valid_slots)
                 apply_assignment(section, subject, assigned_teacher, best_day, best_period)
-                subject_day_count[best_day] += 1
-                filled += 1
 
 
 # ── PHASE 5b – Under-quota fill (ensure no subject is short) ────────
 
 def fill_under_quota_subjects():
     """
-    After phases 1-5, some subjects may still be under their weekly quota
-    (e.g., basic_auto_fill skipped daily-singles/math/IX-X but those phases
-    may not have placed every required period).
-    This pass scans every subject, finds any that are short, and places the
-    remaining periods into empty slots — respecting all constraints.
+    Safety net after phases 1-5: any subject still under quota gets topped up.
+    Uses quota_remaining() for O(1) checks. Relaxes the 2-per-day cap only
+    if absolutely necessary to meet quota.
     """
     for section in st.session_state.subject_config:
-        # Build a list of (subject, deficit) sorted largest deficit first
-        deficits = []
-        for subject, quota in st.session_state.subject_config[section].items():
-            placed = subject_count_total(section, subject)
-            if placed < quota:
-                deficits.append((subject, quota, quota - placed))
+        # Process subjects with largest deficit first
+        subjects_by_deficit = sorted(
+            st.session_state.subject_config[section].keys(),
+            key=lambda s: quota_remaining(section, s),
+            reverse=True
+        )
 
-        deficits.sort(key=lambda x: x[2], reverse=True)  # biggest gap first
+        for subject in subjects_by_deficit:
+            if quota_remaining(section, subject) <= 0:
+                continue
 
-        for subject, quota, deficit in deficits:
             assigned_teacher = _find_teacher(section, subject)
             if not assigned_teacher:
                 continue
 
-            remaining = deficit
-            days_shuffled = DAYS.copy()
-            random.shuffle(days_shuffled)
-
-            for day in days_shuffled:
-                if remaining <= 0:
-                    break
-                if subject_count_total(section, subject) >= quota:
+            # Two passes: first respecting 2/day cap, then relaxing it
+            for relax_cap in (False, True):
+                if quota_remaining(section, subject) <= 0:
                     break
 
-                periods_shuffled = [p for p in get_periods(day) if p != "Lunch"]
-                random.shuffle(periods_shuffled)
+                days_shuffled = DAYS.copy()
+                random.shuffle(days_shuffled)
 
-                for period in periods_shuffled:
-                    if subject_count_total(section, subject) >= quota:
+                for day in days_shuffled:
+                    if quota_remaining(section, subject) <= 0:
                         break
-                    if st.session_state.timetable[section][day][period]["subject"] != "":
+
+                    day_limit = 8 if relax_cap else 2   # relax = fill as many as fit
+                    if subject_count_in_day(section, subject, day) >= day_limit:
                         continue
-                    if can_assign(section, subject, assigned_teacher, day, period):
-                        apply_assignment(section, subject, assigned_teacher, day, period)
-                        remaining -= 1
-                        break
+
+                    periods_shuffled = [p for p in get_periods(day) if p != "Lunch"]
+                    random.shuffle(periods_shuffled)
+
+                    for period in periods_shuffled:
+                        if quota_remaining(section, subject) <= 0:
+                            break
+                        if st.session_state.timetable[section][day][period]["subject"] != "":
+                            continue
+                        if can_assign(section, subject, assigned_teacher, day, period):
+                            apply_assignment(section, subject, assigned_teacher, day, period)
+                            break
 
 
 # ── PHASE 6 – Emergency back-fill (C11: no empty slots) ──────────────
@@ -1258,10 +1290,15 @@ def emergency_backfill():
                 subject_items = list(st.session_state.subject_config.get(section, {}).items())
                 random.shuffle(subject_items)
 
+                # Sort by most remaining quota first — fill biggest gaps first
+                subject_items.sort(
+                    key=lambda kv: quota_remaining(section, kv[0]),
+                    reverse=True
+                )
+
                 for subject, count in subject_items:
-                    # Only use subjects that still have remaining quota
-                    if subject_count_total(section, subject) >= count:
-                        continue
+                    if quota_remaining(section, subject) <= 0:
+                        continue                    # HARD WALL: never exceed quota
 
                     assigned_teacher = _find_teacher(section, subject)
                     if not assigned_teacher:
@@ -1271,28 +1308,7 @@ def emergency_backfill():
                         apply_assignment(section, subject, assigned_teacher, day, period)
                         placed = True
                         break
-
-                if not placed:
-                    # Relaxed pass: try subjects sorted by most remaining quota,
-                    # still NEVER exceeding weekly limit.
-                    # This ensures over-quota placements never happen.
-                    config = st.session_state.subject_config.get(section, {})
-                    ranked = sorted(
-                        config.items(),
-                        key=lambda kv: kv[1] - subject_count_total(section, kv[0]),
-                        reverse=True   # most remaining quota first
-                    )
-                    for subject, quota in ranked:
-                        if subject_count_total(section, subject) >= quota:
-                            continue   # hard quota wall — never break this
-                        assigned_teacher = _find_teacher(section, subject)
-                        if not assigned_teacher:
-                            continue
-                        if can_assign(section, subject, assigned_teacher, day, period):
-                            apply_assignment(section, subject, assigned_teacher, day, period)
-                            placed = True
-                            break
-                    # If still nothing fits, leave slot empty — visible in validation report
+                # If nothing fits within quota, slot stays empty (shown in validation report)
 
 
 # ── Private helper ────────────────────────────────────────
