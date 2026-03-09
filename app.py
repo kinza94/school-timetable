@@ -103,6 +103,9 @@ subject_remaining = {}   # {(section, subject): remaining_count}  — single sou
 # ✅ FIX 3: Removed duplicate clean_name/clean — one function only
 def clean(x):
     return str(x).strip().upper()
+def get_time(day, period):
+    # example
+    return timetable_times.get(period, "")
 
 
 def get_periods(day):
