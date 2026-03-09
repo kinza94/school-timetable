@@ -869,6 +869,67 @@ def apply_assignment(section, subject, teacher, day, period):
                 break
 
 
+# ── Undo helper (inverse of apply_assignment) ───────────
+
+def undo_assignment(section, day, period):
+    """
+    Remove whatever is in timetable[section][day][period] and reverse
+    every counter that apply_assignment incremented.
+    Safe to call on an already-empty slot (no-op).
+    """
+    slot = st.session_state.timetable[section][day][period]
+    subject = slot.get("subject", "")
+    teacher  = slot.get("teacher", "")
+
+    if not subject:
+        return   # nothing to undo
+
+    # ── restore quota ────────────────────────────────────────────────
+    key = (section, subject)
+    if key in subject_remaining:
+        subject_remaining[key] += 1
+
+    # ── restore teacher load counters ────────────────────────────────
+    t_key = clean(teacher) if teacher else ""
+    if t_key and t_key in teacher_day_load:
+        teacher_day_load[t_key][day] = max(0, teacher_day_load[t_key][day] - 1)
+
+    if t_key and t_key in teacher_timeline:
+        idx = get_periods(day).index(period)
+        teacher_timeline[t_key][day][idx] = 0
+
+    # ── clear slot ───────────────────────────────────────────────────
+    st.session_state.timetable[section][day][period] = {"subject": "", "teacher": ""}
+
+    # ── reverse IX-X double flag if this was part of a double ────────
+    if subject and is_ix_x_double(subject):
+        # Re-check whether a double still exists after removal
+        still_doubled = False
+        slots = [p for p in get_periods(day) if p != "Lunch"]
+        for i in range(len(slots) - 1):
+            sa = st.session_state.timetable[section][day][slots[i]]["subject"]
+            sb = st.session_state.timetable[section][day][slots[i+1]]["subject"]
+            if sa.upper() == subject.upper() and sb.upper() == subject.upper():
+                still_doubled = True
+                break
+        if not still_doubled:
+            # Also check other days
+            for d in DAYS:
+                if d == day:
+                    continue
+                dslots = [p for p in get_periods(d) if p != "Lunch"]
+                for i in range(len(dslots) - 1):
+                    sa = st.session_state.timetable[section][d][dslots[i]]["subject"]
+                    sb = st.session_state.timetable[section][d][dslots[i+1]]["subject"]
+                    if sa.upper() == subject.upper() and sb.upper() == subject.upper():
+                        still_doubled = True
+                        break
+                if still_doubled:
+                    break
+            if not still_doubled:
+                double_used.pop((section, subject), None)
+
+
 # ── Timetable skeleton ────────────────────────────────────
 
 def create_empty_timetable():
@@ -1111,8 +1172,9 @@ def calculate_fitness():
 
 def try_swap(section, subject, teacher):
     """
-    Try to free a slot for (subject, teacher) by moving an existing
-    occupant to another empty slot.  Both moves must pass can_assign.
+    Free a slot for (subject, teacher) by moving the existing occupant
+    to any other empty slot.  Uses undo_assignment so quota counters stay
+    accurate.
     """
     for day in DAYS:
         for period in get_periods(day):
@@ -1126,26 +1188,88 @@ def try_swap(section, subject, teacher):
             other_subject = current["subject"]
             other_teacher = current["teacher"]
 
+            # Can the incoming subject land here at all (ignoring the occupant)?
+            # Temporarily clear to let can_assign reason about the empty slot.
+            undo_assignment(section, day, period)     # clears + restores counters
+
+            can_place_here = (
+                not teacher_busy(teacher, day, period)
+                and can_assign(section, subject, teacher, day, period)
+            )
+
+            if not can_place_here:
+                # Put the evicted subject back and try the next slot
+                if can_assign(section, other_subject, other_teacher, day, period):
+                    apply_assignment(section, other_subject, other_teacher, day, period)
+                else:
+                    # Cannot re-place — leave cleared and bail out of whole swap
+                    apply_assignment(section, other_subject, other_teacher, day, period)
+                continue
+
+            # Find a new home for the evicted subject
             for d2 in DAYS:
                 for p2 in get_periods(d2):
                     if p2 == "Lunch":
                         continue
+                    if (d2, p2) == (day, period):
+                        continue
+                    if st.session_state.timetable[section][d2][p2]["subject"] != "":
+                        continue
+                    if not teacher_busy(other_teacher, d2, p2):
+                        if can_assign(section, other_subject, other_teacher, d2, p2):
+                            # Commit: place incoming here, evicted there
+                            apply_assignment(section, subject,       teacher,       day, period)
+                            apply_assignment(section, other_subject, other_teacher, d2,  p2)
+                            return True
 
-                    target = st.session_state.timetable[section][d2][p2]
+            # No home found for evicted — restore it and continue
+            apply_assignment(section, other_subject, other_teacher, day, period)
 
-                    if (
-                        target["subject"] == ""
-                        and not teacher_busy(other_teacher, d2, p2)
-                        and not teacher_busy(teacher, day, period)
-                        and can_assign(section, subject, teacher, day, period)
-                        and can_assign(section, other_subject, other_teacher, d2, p2)
-                    ):
-                        st.session_state.timetable[section][day][period] = {"subject": "", "teacher": ""}
-                        st.session_state.timetable[section][d2][p2]      = {"subject": "", "teacher": ""}
+    return False
 
-                        apply_assignment(section, subject,       teacher,       day, period)
-                        apply_assignment(section, other_subject, other_teacher, d2,  p2)
-                        return True
+
+def try_displace(section, subject, teacher):
+    """
+    Stronger than try_swap: look for a slot occupied by a subject that is
+    ALREADY AT or ABOVE its weekly quota (i.e. it has surplus placements).
+    Evict that surplus period — no need to re-home it — and place the
+    under-quota subject in the freed slot.
+
+    This is the last resort before giving up on a subject's quota.
+    """
+    config = st.session_state.subject_config.get(section, {})
+
+    for day in DAYS:
+        for period in get_periods(day):
+            if period == "Lunch":
+                continue
+
+            current = st.session_state.timetable[section][day][period]
+            occupant_subj    = current.get("subject", "")
+            occupant_teacher = current.get("teacher", "")
+
+            if not occupant_subj:
+                continue
+
+            # Only evict a subject that has ZERO remaining quota (it has a surplus)
+            if quota_remaining(section, occupant_subj) > 0:
+                continue   # still needs its own periods — don't touch it
+
+            # After eviction, can we place the needed subject here?
+            undo_assignment(section, day, period)
+
+            if (
+                not teacher_busy(teacher, day, period)
+                and can_assign(section, subject, teacher, day, period)
+            ):
+                apply_assignment(section, subject, teacher, day, period)
+                return True
+            else:
+                # Can't use this slot — restore the evicted period
+                if occupant_teacher and can_assign(section, occupant_subj, occupant_teacher, day, period):
+                    apply_assignment(section, occupant_subj, occupant_teacher, day, period)
+                else:
+                    apply_assignment(section, occupant_subj, occupant_teacher, day, period)
 
     return False
 
@@ -1202,13 +1326,14 @@ def basic_auto_fill():
                         valid_slots.append((day, period))
 
                 if not valid_slots:
-                    swapped = try_swap(section, subject, assigned_teacher)
-                    if swapped:
-                        # subject_remaining was decremented inside apply_assignment via try_swap
-                        pass
-                    else:
-                        break   # genuinely impossible — move on
-                    continue
+                    # Try 1: move an existing slot to make room
+                    if try_swap(section, subject, assigned_teacher):
+                        continue
+                    # Try 2: evict a surplus-quota slot to make room
+                    if try_displace(section, subject, assigned_teacher):
+                        continue
+                    # Genuinely no legal placement exists right now — move on
+                    break
 
                 best_day, best_period = random.choice(valid_slots)
                 apply_assignment(section, subject, assigned_teacher, best_day, best_period)
@@ -1219,8 +1344,11 @@ def basic_auto_fill():
 def fill_under_quota_subjects():
     """
     Safety net after phases 1-5: any subject still under quota gets topped up.
-    Uses quota_remaining() for O(1) checks. Relaxes the 2-per-day cap only
-    if absolutely necessary to meet quota.
+    Three escalation levels per period needed:
+      Level 1 — place into a genuinely empty slot (2/day cap)
+      Level 2 — place into a genuinely empty slot (cap relaxed)
+      Level 3 — try_swap (move an occupant to another empty slot)
+      Level 4 — try_displace (evict a surplus-quota occupant permanently)
     """
     for section in st.session_state.subject_config:
         # Process subjects with largest deficit first
@@ -1231,14 +1359,11 @@ def fill_under_quota_subjects():
         )
 
         for subject in subjects_by_deficit:
-            if quota_remaining(section, subject) <= 0:
-                continue
-
             assigned_teacher = _find_teacher(section, subject)
             if not assigned_teacher:
                 continue
 
-            # Two passes: first respecting 2/day cap, then relaxing it
+            # ── Levels 1 & 2: direct placement, first strict cap then relaxed ──
             for relax_cap in (False, True):
                 if quota_remaining(section, subject) <= 0:
                     break
@@ -1250,7 +1375,7 @@ def fill_under_quota_subjects():
                     if quota_remaining(section, subject) <= 0:
                         break
 
-                    day_limit = 8 if relax_cap else 2   # relax = fill as many as fit
+                    day_limit = 8 if relax_cap else 2
                     if subject_count_in_day(section, subject, day) >= day_limit:
                         continue
 
@@ -1266,16 +1391,34 @@ def fill_under_quota_subjects():
                             apply_assignment(section, subject, assigned_teacher, day, period)
                             break
 
+            # ── Level 3: swap an occupant to a different empty slot ──────────
+            if quota_remaining(section, subject) > 0:
+                while quota_remaining(section, subject) > 0:
+                    if not try_swap(section, subject, assigned_teacher):
+                        break
+
+            # ── Level 4: displace a surplus-quota occupant ───────────────────
+            if quota_remaining(section, subject) > 0:
+                while quota_remaining(section, subject) > 0:
+                    if not try_displace(section, subject, assigned_teacher):
+                        break
+
 
 # ── PHASE 6 – Emergency back-fill (C11: no empty slots) ──────────────
 
 def emergency_backfill():
     """
-    C11 – After all phases run, scan every slot.  Any empty teaching period
-    gets filled with ANY subject+teacher combo that passes can_assign, even
-    relaxing the 3-consecutive soft rule.  This guarantees a fully-filled
-    timetable.
+    Phase 6 — two-stage final pass.
+
+    Stage A: Fill every remaining EMPTY slot with any under-quota subject.
+             Subjects sorted by biggest remaining quota first.
+
+    Stage B: Quota-enforcement sweep — for each subject still under quota,
+             try try_swap then try_displace until quota is met or truly
+             impossible.  This is the guarantee that generation never
+             finishes with an incomplete quota.
     """
+    # ── Stage A: fill empty slots ─────────────────────────────────────
     for section in st.session_state.timetable:
         for day in DAYS:
             for period in get_periods(day):
@@ -1284,21 +1427,15 @@ def emergency_backfill():
                 if st.session_state.timetable[section][day][period]["subject"] != "":
                     continue
 
-                # Find any assignable (subject, teacher) for this slot
-                placed = False
-
-                subject_items = list(st.session_state.subject_config.get(section, {}).items())
-                random.shuffle(subject_items)
-
-                # Sort by most remaining quota first — fill biggest gaps first
-                subject_items.sort(
+                subject_items = sorted(
+                    st.session_state.subject_config.get(section, {}).items(),
                     key=lambda kv: quota_remaining(section, kv[0]),
-                    reverse=True
+                    reverse=True   # biggest remaining quota first
                 )
 
-                for subject, count in subject_items:
+                for subject, _ in subject_items:
                     if quota_remaining(section, subject) <= 0:
-                        continue                    # HARD WALL: never exceed quota
+                        continue   # HARD WALL
 
                     assigned_teacher = _find_teacher(section, subject)
                     if not assigned_teacher:
@@ -1306,9 +1443,56 @@ def emergency_backfill():
 
                     if can_assign(section, subject, assigned_teacher, day, period):
                         apply_assignment(section, subject, assigned_teacher, day, period)
-                        placed = True
                         break
-                # If nothing fits within quota, slot stays empty (shown in validation report)
+                # Slot may remain empty if nothing legal exists — Stage B handles quotas
+
+    # ── Stage B: quota-enforcement — no subject may finish short ─────
+    for section in st.session_state.subject_config:
+        # Iterate subjects sorted by remaining deficit (largest first)
+        subjects_needing = sorted(
+            [s for s in st.session_state.subject_config[section]
+             if quota_remaining(section, s) > 0],
+            key=lambda s: quota_remaining(section, s),
+            reverse=True
+        )
+
+        for subject in subjects_needing:
+            assigned_teacher = _find_teacher(section, subject)
+            if not assigned_teacher:
+                continue
+
+            # Keep trying until quota met or all options exhausted
+            stalled = False
+            while quota_remaining(section, subject) > 0 and not stalled:
+                placed = False
+
+                # Pass 1: find any genuinely empty slot
+                for day in DAYS:
+                    if placed:
+                        break
+                    for period in get_periods(day):
+                        if period == "Lunch":
+                            continue
+                        if st.session_state.timetable[section][day][period]["subject"] != "":
+                            continue
+                        if can_assign(section, subject, assigned_teacher, day, period):
+                            apply_assignment(section, subject, assigned_teacher, day, period)
+                            placed = True
+                            break
+
+                if placed:
+                    continue
+
+                # Pass 2: swap an occupant to another empty slot
+                if try_swap(section, subject, assigned_teacher):
+                    continue
+
+                # Pass 3: displace a surplus-quota occupant (permanent eviction)
+                if try_displace(section, subject, assigned_teacher):
+                    continue
+
+                # All three options exhausted — genuinely impossible this run
+                stalled = True
 
 
 # ── Private helper ────────────────────────────────────────
