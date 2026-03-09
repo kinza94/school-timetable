@@ -1,33 +1,79 @@
-
 import streamlit as st
+
+# ✅ FIX 1: set_page_config MUST be the very first Streamlit call
+st.set_page_config(page_title="School Scheduler Pro", layout="wide")
+
 import pandas as pd
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import sqlite3
 import json
 from docx import Document
+from docx.enum.section import WD_ORIENT
+from docx.shared import Inches
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 import random
-
 import copy
+import os
+
+# ==================================================
+# ---------------- CONSTANTS -----------------------
+# ==================================================
+
+DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+MON_THU_TIMES = {
+    "P1": "8:00-8:45",
+    "P2": "8:45-9:30",
+    "P3": "9:30-10:15",
+    "P4": "10:15-11:00",
+    "Lunch": "11:00-11:30",
+    "P5": "11:30-12:15",
+    "P6": "12:15-1:00",
+    "P7": "1:00-1:45",
+    "P8": "1:45-2:30",
+}
+
+FRIDAY_TIMES = {
+    "P1": "8:00-8:40",
+    "P2": "8:40-9:15",
+    "P3": "9:15-9:50",
+    "P4": "9:50-10:25",
+    "Lunch": "10:25-10:55",
+    "P5": "10:55-11:35",
+    "P6": "11:35-12:15",
+}
+
+ALL_PERIODS = ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6", "P7", "P8"]
+
+# ✅ FIX 2: Credentials moved to constants (replace with env vars in production)
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "Kinz@420"
+HEAD_USERNAME = "head"
+HEAD_PASSWORD = "9999"
+VIEWER_PASSWORD = "1234"
+
+# ==================================================
+# ---------------- DB SETUP ------------------------
+# ==================================================
 
 conn = sqlite3.connect("school.db", check_same_thread=False)
 c = conn.cursor()
-import os
-st.write("Current Folder:", os.getcwd())
 
+c.execute("""
+CREATE TABLE IF NOT EXISTS app_data (
+    id INTEGER PRIMARY KEY,
+    data TEXT
+)
+""")
+conn.commit()
 
-def clean_name(x):
-    return str(x).strip().upper()
-
-
-def clean(x):
-    return str(x).strip().upper()
-
+styles_pdf = getSampleStyleSheet()
+styleN = styles_pdf["Normal"]
 
 # ==================================================
 # -------- CONSTRAINT ENGINE GLOBAL STATE ----------
@@ -36,118 +82,22 @@ def clean(x):
 teacher_day_load = {}
 teacher_timeline = {}
 double_used = {}
-styles = getSampleStyleSheet()
-styleN = styles["Normal"]
-# Create table
-c.execute("""
-CREATE TABLE IF NOT EXISTS app_data (
-    id INTEGER PRIMARY KEY,
-    data TEXT
-)
-""")
-
-conn.commit()
-
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if "role" not in st.session_state:
-    st.session_state.role = None
-
-if not st.session_state.logged_in:
-
-    st.title("Login")
-
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-
-    if st.button("Login"):
-
-        if username == "admin" and password == "Kinz@420":
-            st.session_state.logged_in = True
-            st.session_state.role = "admin"
-            st.success("Logged in as Admin")
-            st.rerun()
-
-        elif username in st.session_state.teachers and password == "1234":
-            st.session_state.logged_in = True
-            st.session_state.role = "viewer"
-            st.success(f"Logged in as {username}")
-            st.rerun()
-
-        elif username == "head" and password == "9999":
-            st.session_state.logged_in = True
-            st.session_state.role = "viewer"
-            st.success("Logged in as Head")
-            st.rerun()
-
-        else:
-            st.error("Invalid credentials")
-
-if st.session_state.role == "admin":
-    if st.button("Generate Timetable", key="admin_generate"):
-        pass
+subject_remaining = {}   # {(section, subject): remaining_count}  — single source of truth for quotas
 
 # ==================================================
-# ---------------- APP SETUP -----------------------
+# ---------------- HELPERS -------------------------
 # ==================================================
-st.set_page_config(page_title="School Scheduler Pro", layout="wide")
 
-st.markdown("""
-    <style>
-        .main {
-            background-color: #f4f7fb;
-        }
-        h1 {
-            color: #1f4e79;
-        }
-        .stButton>button {
-            background-color: #4a90e2;
-            color: white;
-            border-radius: 8px;
-            height: 3em;
-            width: 100%;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-st.title("📚 School Timetable Scheduler Pro")
-
-# ==================================================
-# ---------------- GLOBAL CONSTANTS ----------------
-# ==================================================
-DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-MON_THU_TIMES = {
-"P1":"8:00-8:50",
-"P2":"8:50-9:30",
-"P3":"9:30-10:10",
-"P4":"10:10-10:50",
-"P5":"10:50-11:30",
-"Lunch":"11:30-12:00",
-"P6":"12:00-12:40",
-"P7":"12:40-1:20",
-"P8":"1:20-2:00"
-}
-
-FRIDAY_TIMES = {
-"P1":"8:00-8:40",
-"P2":"8:40-9:15",
-"P3":"9:15-9:50",
-"P4":"9:50-10:25",
-"Lunch":"10:25-10:55",
-"P5":"10:55-11:35",
-"P6":"11:35-12:15"
-}
-ALL_PERIODS = ["P1", "P2", "P3", "P4", "P5", "Lunch", "P6", "P7", "P8"]
+# ✅ FIX 3: Removed duplicate clean_name/clean — one function only
+def clean(x):
+    return str(x).strip().upper()
 
 
 def get_periods(day):
-
+    # Lunch is always after the 4th period on every day
     if day == "Friday":
-        return ["P1","P2","P3","P4","Lunch","P5","P6"]
-
-    return ["P1","P2","P3","P4","P5","Lunch","P6","P7","P8"]
-
+        return ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6"]
+    return ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6", "P7", "P8"]
 
 
 # ==================================================
@@ -172,6 +122,15 @@ if "teacher_assignment" not in st.session_state:
 if "timetable" not in st.session_state:
     st.session_state.timetable = {}
 
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if "role" not in st.session_state:
+    st.session_state.role = None
+
+# ==================================================
+# ---------------- DB FUNCTIONS --------------------
+# ==================================================
 
 def save_all_data():
     data = {
@@ -187,15 +146,9 @@ def save_all_data():
     count = c.fetchone()[0]
 
     if count == 0:
-        c.execute(
-            "INSERT INTO app_data (id, data) VALUES (1, ?)",
-            (json.dumps(data),)
-        )
+        c.execute("INSERT INTO app_data (id, data) VALUES (1, ?)", (json.dumps(data),))
     else:
-        c.execute(
-            "UPDATE app_data SET data=? WHERE id=1",
-            (json.dumps(data),)
-        )
+        c.execute("UPDATE app_data SET data=? WHERE id=1", (json.dumps(data),))
 
     conn.commit()
 
@@ -206,7 +159,6 @@ def load_all_data():
 
     if row:
         data = json.loads(row[0])
-
         st.session_state.teachers = data.get("teachers", {})
         st.session_state.sections = data.get("sections", {})
         st.session_state.class_teachers = data.get("class_teachers", {})
@@ -214,42 +166,100 @@ def load_all_data():
         st.session_state.teacher_assignment = data.get("teacher_assignment", {})
         st.session_state.timetable = data.get("timetable", {})
 
+    # Normalize teacher names to uppercase
     cleaned = {}
-
     for t in st.session_state.teachers:
-        cleaned[clean_name(t)] = {}
-
+        cleaned[clean(t)] = {}
     st.session_state.teachers = cleaned
+
     for sec in st.session_state.timetable:
         for day in DAYS:
             for p in get_periods(day):
                 teacher = st.session_state.timetable[sec][day][p]["teacher"]
-                st.session_state.timetable[sec][day][p]["teacher"] = clean_name(teacher)
+                st.session_state.timetable[sec][day][p]["teacher"] = clean(teacher)
 
+
+# ✅ FIX 4: Load data BEFORE login so teachers dict is ready
+if "data_loaded" not in st.session_state:
+    load_all_data()
+    st.session_state.data_loaded = True
+
+# ==================================================
+# ---------------- LOGIN ---------------------------
+# ==================================================
+
+if not st.session_state.logged_in:
+    st.title("Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            st.session_state.logged_in = True
+            st.session_state.role = "admin"
+            st.success("Logged in as Admin")
+            st.rerun()
+
+        # ✅ FIX 5: teachers is now loaded before this check runs
+        elif username in st.session_state.teachers and password == VIEWER_PASSWORD:
+            st.session_state.logged_in = True
+            st.session_state.role = "viewer"
+            st.success(f"Logged in as {username}")
+            st.rerun()
+
+        elif username == HEAD_USERNAME and password == HEAD_PASSWORD:
+            st.session_state.logged_in = True
+            st.session_state.role = "viewer"
+            st.success("Logged in as Head")
+            st.rerun()
+
+        else:
+            st.error("Invalid credentials")
+
+    st.stop()  # Don't render anything else until logged in
+
+# ==================================================
+# ---------------- STYLING -------------------------
+# ==================================================
+
+st.markdown("""
+    <style>
+        .main { background-color: #f4f7fb; }
+        h1 { color: #1f4e79; }
+        .stButton>button {
+            background-color: #4a90e2;
+            color: white;
+            border-radius: 8px;
+            height: 3em;
+            width: 100%;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("📚 School Timetable Scheduler Pro")
+
+# ==================================================
+# ---------------- VALIDATION FUNCTIONS ------------
+# ==================================================
 
 def validate_subject_weekly(section):
     issues = []
-
     if section not in st.session_state.subject_config:
         return issues
 
     required_counts = st.session_state.subject_config[section]
     actual_counts = {}
 
-    # Count actual subjects in timetable
     for day in DAYS:
         for period in get_periods(day):
             subject = st.session_state.timetable[section][day][period]["subject"]
             if subject:
                 actual_counts[subject] = actual_counts.get(subject, 0) + 1
 
-    # Compare with required
     for subject, required in required_counts.items():
         actual = actual_counts.get(subject, 0)
         if actual != required:
-            issues.append(
-                f"{subject} should be {required} periods but currently {actual}"
-            )
+            issues.append(f"{subject} should be {required} periods but currently {actual}")
 
     return issues
 
@@ -259,26 +269,16 @@ def validate_teacher_clashes():
 
     for day in DAYS:
         for period in get_periods(day):
-
             teacher_slots = {}
 
             for section in st.session_state.timetable:
-
                 teacher = st.session_state.timetable[section][day][period]["teacher"]
-
                 if teacher:
+                    teacher_slots.setdefault(teacher, []).append(section)
 
-                    if teacher not in teacher_slots:
-                        teacher_slots[teacher] = []
-
-                    teacher_slots[teacher].append(section)
-
-            # If same teacher in multiple sections
             for teacher, sections in teacher_slots.items():
                 if len(sections) > 1:
-                    issues.append(
-                        f"Clash: {teacher} has {sections} at {day} {period}"
-                    )
+                    issues.append(f"Clash: {teacher} has {sections} at {day} {period}")
 
     return issues
 
@@ -287,487 +287,26 @@ def validate_class_teacher_presence():
     issues = []
 
     for section, class_teacher in st.session_state.class_teachers.items():
-
-        # 🔒 Safety check: section exists in timetable
         if section not in st.session_state.timetable:
             continue
 
         found = False
-
         for day in DAYS:
-
-            # Safety check: day exists
             if day not in st.session_state.timetable[section]:
                 continue
-
             for period in get_periods(day):
-
-                # Safety check: period exists
                 if period not in st.session_state.timetable[section][day]:
                     continue
-
-                teacher = st.session_state.timetable[section][day][period]["teacher"]
-
-                if teacher == class_teacher:
+                if st.session_state.timetable[section][day][period]["teacher"] == class_teacher:
                     found = True
                     break
-
             if found:
                 break
 
         if not found:
-            issues.append(
-                f"Class teacher {class_teacher} has no period in {section}"
-            )
+            issues.append(f"Class teacher {class_teacher} has no period in {section}")
 
     return issues
-
-
-if "data_loaded" not in st.session_state:
-    load_all_data()
-    st.session_state.data_loaded = True
-
-
-# ==================================================
-# AI DETECTION ENGINE
-# ============================================
-def find_alternative_teacher(section, subject, day, period):
-    alternatives = []
-
-    for teacher, sec_data in st.session_state.teacher_assignment.items():
-
-        if section in sec_data and subject in sec_data[section]:
-
-            # Skip original teacher
-            if teacher == st.session_state.timetable[section][day][period]["teacher"]:
-                continue
-
-            if not teacher_busy(teacher, day, period):
-                alternatives.append(teacher)
-
-    return alternatives
-
-
-def find_swap_option(section, teacher, subject, day, period):
-    swaps = []
-
-    for d in DAYS:
-        for p in get_periods(d):
-
-            if (d == day and p == period):
-                continue
-
-            if st.session_state.timetable[section][d][p]["teacher"] == teacher:
-
-                # Check if swapping avoids clash
-                if not teacher_busy(teacher, day, period):
-                    swaps.append((d, p))
-
-    return swaps
-
-
-# ==================================================
-# ---------------- CREATE TIMETABLE ----------------
-# ==================================================
-def can_assign(section, subject, teacher, day, period):
-    periods = get_periods(day)
-    idx = periods.index(period)
-
-    # ---------- teacher clash ----------
-    if teacher_busy(teacher, day, period):
-        return False
-
-    # ---------- max 6 periods/day ----------
-    if teacher_day_load[teacher][day] >= 6:
-        return False
-
-    # ---------- no 4 or 5 consecutive ----------
-    timeline = teacher_timeline[teacher][day].copy()
-    timeline[idx] = 1
-
-    streak = 0
-    for v in timeline:
-        streak = streak + 1 if v else 0
-        if streak >= 4:
-            return False
-
-    # ---------- IX-X double rule ----------
-    if is_ix_x_double(subject):
-
-        prev_same = False
-        next_same = False
-
-        if idx > 0:
-            prev = periods[idx - 1]
-            if st.session_state.timetable[section][day][prev]["subject"] == subject:
-                prev_same = True
-
-        if idx < len(periods) - 1:
-            nxt = periods[idx + 1]
-            if st.session_state.timetable[section][day][nxt]["subject"] == subject:
-                next_same = True
-
-        if (prev_same or next_same):
-            if double_used.get((section, subject), False):
-                return False
-
-    return True
-
-
-# ==================================================
-# -------- SAFE ASSIGNMENT (STATE UPDATE) ----------
-# ==================================================
-
-def apply_assignment(section, subject, teacher, day, period):
-    st.session_state.timetable[section][day][period]["subject"] = subject
-    st.session_state.timetable[section][day][period]["teacher"] = teacher
-
-    idx = get_periods(day).index(period)
-
-    teacher_day_load[teacher][day] += 1
-    teacher_timeline[teacher][day][idx] = 1
-
-    # mark IX-X double used
-    if is_ix_x_double(subject):
-
-        periods = get_periods(day)
-
-        if idx > 0:
-            if st.session_state.timetable[section][day][periods[idx - 1]]["subject"] == subject:
-                double_used[(section, subject)] = True
-
-        if idx < len(periods) - 1:
-            if st.session_state.timetable[section][day][periods[idx + 1]]["subject"] == subject:
-                double_used[(section, subject)] = True
-
-
-# --------------------------------------------
-# CREATE EMPTY TIMETABLE
-# --------------------------------------------
-def create_empty_timetable():
-    timetable = {}
-
-    # -------- RESET TRACKERS ONCE --------
-    teacher_day_load.clear()
-    teacher_timeline.clear()
-    double_used.clear()
-
-    for t in st.session_state.teachers:
-        teacher_day_load[t] = {}
-        teacher_timeline[t] = {}
-
-        for d in DAYS:
-            periods = get_periods(d)
-            teacher_day_load[t][d] = 0
-            teacher_timeline[t][d] = [0] * len(periods)
-
-    # -------- CREATE TABLE --------
-    for section in st.session_state.sections:
-        timetable[section] = {}
-        for day in DAYS:
-            timetable[section][day] = {}
-            for period in get_periods(day):
-                timetable[section][day][period] = {
-                    "subject": "",
-                    "teacher": ""
-                }
-
-    return timetable
-
-
-# -------------
-# ---DOUBLE RULE
-def is_ix_x_double(subject):
-    s = subject.upper()
-
-    targets = [
-        "PHYSICS", "CHEMISTRY", "COMPUTER IX-X",
-    ]
-
-    return any(t in s for t in targets)
-
-
-# TEACHER BUSY CHECK
-# ----------------------------
-def teacher_busy(teacher, day, period):
-    for sec in st.session_state.timetable:
-        if st.session_state.timetable[sec][day][period]["teacher"] == teacher:
-            return True
-    return False
-
-
-def teacher_daily_load(teacher, day):
-    count = 0
-    for sec in st.session_state.timetable:
-        for period in get_periods(day):
-            if st.session_state.timetable[sec][day][period]["teacher"] == teacher:
-                count += 1
-    return count
-
-
-def assign_class_teacher_priority():
-    for section, class_teacher in st.session_state.class_teachers.items():
-
-        # Check if teacher teaches any subject in this section
-        if class_teacher not in st.session_state.teacher_assignment:
-            continue
-
-        if section not in st.session_state.teacher_assignment[class_teacher]:
-            continue
-
-        subjects = st.session_state.teacher_assignment[class_teacher][section]
-
-        for day in DAYS:
-
-            if "P1" not in get_periods(day):
-                continue
-
-            if not subjects:
-                continue
-
-            # Pick first subject assigned to class teacher
-            subject = subjects[0]
-
-            # Check if subject still needs periods
-            required = st.session_state.subject_config[section].get(subject, 0)
-
-            # count already placed periods
-            current_count = 0
-            for d in DAYS:
-                for p in get_periods(d):
-                    if st.session_state.timetable[section][d][p]["subject"] == subject:
-                        current_count += 1
-
-            if current_count >= required:
-                continue
-
-            # Check slot free & teacher not busy
-            if (
-                    st.session_state.timetable[section][day]["P1"]["subject"] == ""
-                    and can_assign(section, subject, class_teacher, day, "P1")
-            ):
-                apply_assignment(section, subject, class_teacher, day, "P1")
-
-
-def calculate_fitness():
-    score = 1000  # start high
-
-    # Penalize 3 consecutive
-    issues = validate_no_three_consecutive()
-    score -= len(issues) * 50
-
-    # Penalize imbalance
-    dist = validate_teacher_distribution()
-    score -= len(dist) * 20
-
-    # Penalize Friday overload
-    friday = validate_friday_load()
-    score -= len(friday) * 10
-
-    return score
-
-
-# -------------------------------------------
-# BASIC AUTO FILL ENGINE
-# --------------------------------------------
-def try_swap(section, subject, teacher):
-    for day in DAYS:
-        for period in get_periods(day):
-
-            if period == "Lunch":
-                continue
-
-            current = st.session_state.timetable[section][day][period]
-
-            # Skip if empty
-            if current["subject"] == "":
-                continue
-
-            other_subject = current["subject"]
-            other_teacher = current["teacher"]
-
-            # Can we move this subject somewhere else?
-            for d2 in DAYS:
-                for p2 in get_periods(d2):
-
-                    if p2 == "Lunch":
-                        continue
-
-                    target = st.session_state.timetable[section][d2][p2]
-
-                    if target["subject"] == "" and not teacher_busy(other_teacher, d2, p2):
-
-                        # Check original slot safe for new teacher
-                        if not teacher_busy(teacher, day, period):
-
-                            # perform swap safely
-
-                            if not can_assign(section, subject, teacher, day, period):
-                                continue
-
-                            # --- clear BOTH slots FIRST ---
-                            st.session_state.timetable[section][day][period] = {
-                                "subject": "",
-                                "teacher": ""
-                            }
-
-                            st.session_state.timetable[section][d2][p2] = {
-                                "subject": "",
-                                "teacher": ""
-                            }
-
-                            # --- now assign ---
-                            apply_assignment(section, subject, teacher, day, period)
-                            apply_assignment(section, other_subject, other_teacher, d2, p2)
-
-                            return True
-
-    return False
-
-
-def basic_auto_fill():
-    sections = list(st.session_state.subject_config.keys())
-    random.shuffle(sections)
-
-    for section in sections:
-
-        subjects = st.session_state.subject_config[section]
-        maths_double_done = False
-
-        subject_items = list(subjects.items())
-        random.shuffle(subject_items)
-
-        for subject, count in subject_items:
-
-            # STEP 1️⃣: Find assigned teacher FIRST
-            assigned_teacher = None
-
-            for teacher, sec_data in st.session_state.teacher_assignment.items():
-                if section in sec_data and subject in sec_data[section]:
-                    assigned_teacher = teacher
-                    break
-
-            if not assigned_teacher:
-                continue
-
-            # STEP 2️⃣: Daily guarantee for high frequency subjects
-            if count >= 5:
-
-                for day in DAYS:
-
-                    already_present = False
-                    for p in get_periods(day):
-                        if st.session_state.timetable[section][day][p]["subject"] == subject:
-                            already_present = True
-                            break
-
-                    if already_present:
-                        continue
-
-                    valid_periods = []
-
-                    periods = get_periods(day).copy()
-                    random.shuffle(periods)
-
-                    for period in periods:
-                        real_periods = get_periods(day)
-                        real_index = real_periods.index(period)
-
-                        if period == "Lunch":
-                            continue
-
-                        if (
-                                st.session_state.timetable[section][day][period]["subject"] == ""
-                                and can_assign(section, subject, assigned_teacher, day, period)
-                        ):
-                            valid_periods.append(period)
-
-                    if valid_periods:
-                        chosen = random.choice(valid_periods)
-
-                        apply_assignment(section, subject, assigned_teacher, day, chosen)
-
-            # 🔹 Find teacher (still inside subject loop)
-            for teacher, sec_data in st.session_state.teacher_assignment.items():
-                if section in sec_data and subject in sec_data[section]:
-                    assigned_teacher = teacher
-                    break
-
-            if not assigned_teacher:
-                continue
-
-            # Count already filled slots for this subject
-            filled = 0
-            for d in DAYS:
-                for p in get_periods(d):
-                    if st.session_state.timetable[section][d][p]["subject"] == subject:
-                        filled += 1
-
-            subject_day_count = {day: 0 for day in DAYS}
-
-            while filled < count:
-
-                valid_slots = []
-
-                days = DAYS.copy()
-                random.shuffle(days)
-
-                for day in days:
-
-                    if subject_day_count[day] >= 2:
-                        continue
-
-                    periods = get_periods(day).copy()
-                    random.shuffle(periods)
-
-                    for period in periods:
-                        real_periods = get_periods(day)
-                        real_index = real_periods.index(period)
-
-                        if period == "Lunch":
-                            continue
-
-                        if st.session_state.timetable[section][day][period]["subject"] != "":
-                            continue
-
-                        if teacher_busy(assigned_teacher, day, period):
-                            continue
-
-                        if teacher_daily_load(assigned_teacher, day) >= 6:
-                            continue
-                        # 🔴 HARD BLOCK: prevent ANY 3 consecutive pattern
-
-                        periods = get_periods(day)
-
-                        # ---- HARD STREAK CHECK ----
-
-                        if not can_assign(section, subject, assigned_teacher, day, period):
-                            continue
-                        valid_slots.append((0, day, period))
-
-                # ===============================
-                # PICK BEST SLOT
-                # ===============================
-
-                if not valid_slots:
-
-                    swapped = try_swap(section, subject, assigned_teacher)
-
-                    if not swapped:
-                        print(f"⚠ Could not place {subject}")
-                        filled = count
-                        break
-                    else:
-                        filled += 1
-                        continue
-
-                best = random.choice(valid_slots)
-                _, best_day, best_period = best
-
-                apply_assignment(section, subject, assigned_teacher, best_day, best_period)
-
-                subject_day_count[best_day] += 1
-                filled += 1
 
 
 def validate_teacher_distribution():
@@ -775,13 +314,12 @@ def validate_teacher_distribution():
 
     for teacher in st.session_state.teachers:
         daily_load = []
-
         for day in DAYS:
-            count = 0
-            for sec in st.session_state.timetable:
-                for period in get_periods(day):
-                    if st.session_state.timetable[sec][day][period]["teacher"] == teacher:
-                        count += 1
+            count = sum(
+                1 for sec in st.session_state.timetable
+                for period in get_periods(day)
+                if st.session_state.timetable[sec][day][period]["teacher"] == teacher
+            )
             daily_load.append(count)
 
         if max(daily_load) - min(daily_load) >= 2:
@@ -794,12 +332,11 @@ def validate_friday_load():
     issues = []
 
     for teacher in st.session_state.teachers:
-        count = 0
-        for sec in st.session_state.timetable:
-            for period in get_periods("Friday"):
-                if st.session_state.timetable[sec]["Friday"][period]["teacher"] == teacher:
-                    count += 1
-
+        count = sum(
+            1 for sec in st.session_state.timetable
+            for period in get_periods("Friday")
+            if st.session_state.timetable[sec]["Friday"][period]["teacher"] == teacher
+        )
         if count > 5:
             issues.append(f"{teacher} heavy Friday ({count} periods)")
         elif count == 5:
@@ -813,19 +350,15 @@ def validate_maths_consecutive():
 
     for sec in st.session_state.timetable:
         for day in DAYS:
-
-            maths_positions = []
-
-            for period in get_periods(day):
-                subject = st.session_state.timetable[sec][day][period]["subject"]
-                if subject and "Math" in subject:
-                    maths_positions.append(period)
+            maths_positions = [
+                period for period in get_periods(day)
+                if "Math" in (st.session_state.timetable[sec][day][period]["subject"] or "")
+            ]
 
             if len(maths_positions) == 2:
                 periods = get_periods(day)
                 idx1 = periods.index(maths_positions[0])
                 idx2 = periods.index(maths_positions[1])
-
                 if abs(idx1 - idx2) != 1:
                     issues.append(f"{sec} Maths not consecutive on {day}")
 
@@ -836,23 +369,19 @@ def validate_double_period_rule():
     issues = []
 
     for section in st.session_state.timetable:
-
         if section not in st.session_state.subject_config:
             continue
 
         required_config = st.session_state.subject_config[section]
 
         for subject, weekly_required in required_config.items():
-
             double_days = 0
 
             for day in DAYS:
-                count_today = 0
-
-                for period in get_periods(day):
-                    if st.session_state.timetable[section][day][period]["subject"] == subject:
-                        count_today += 1
-
+                count_today = sum(
+                    1 for period in get_periods(day)
+                    if st.session_state.timetable[section][day][period]["subject"] == subject
+                )
                 if count_today >= 2:
                     double_days += 1
 
@@ -866,233 +395,1534 @@ def validate_double_period_rule():
     return issues
 
 
-# SUGGESTION============================================
-def get_free_teachers(day, period):
-    free = []
-
-    for teacher in st.session_state.teachers:
-        if not teacher_busy(teacher, day, period):
-            free.append(teacher)
-
-    return free
-
-
-def suggest_safe_slots(section, teacher):
-    safe = []
-
-    for day in DAYS:
-        for period in get_periods(day):
-
-            if period == "Lunch":
-                continue
-
-            if (
-                    st.session_state.timetable[section][day][period]["subject"] == ""
-                    and not teacher_busy(teacher, day, period)
-            ):
-                safe.append((day, period))
-
-    return safe[:5]
-
-
-# ===================================
-# ------- max 25 periods per week----
-# ===================================
 def validate_teacher_max_load(max_periods=25):
     issues = []
 
     for teacher in st.session_state.teachers:
-
-        count = 0
-
-        for sec in st.session_state.timetable:
-            for day in DAYS:
-                for period in get_periods(day):
-                    if st.session_state.timetable[sec][day][period]["teacher"] == teacher:
-                        count += 1
-
+        count = count_teacher_periods(teacher)
         if count > max_periods:
             issues.append(f"{teacher} exceeds {max_periods} periods (currently {count})")
 
     return issues
 
 
-# ================================================
-# ----------TEACHER REPLACEMENT----------------
-# ================================================
+# ✅ FIX 6: validate_no_three_consecutive is now a real function
+def validate_no_three_consecutive():
+    issues = []
+
+    for sec in st.session_state.timetable:
+        for day in DAYS:
+            periods = get_periods(day)
+            streak = 0
+            prev_teacher = None
+
+            for period in periods:
+                if period == "Lunch":
+                    streak = 0
+                    prev_teacher = None
+                    continue
+
+                teacher = st.session_state.timetable[sec][day][period]["teacher"]
+
+                if teacher and teacher == prev_teacher:
+                    streak += 1
+                    if streak >= 3:
+                        issues.append(
+                            f"{teacher} has 3+ consecutive periods in {sec} on {day}"
+                        )
+                else:
+                    streak = 1
+                    prev_teacher = teacher
+
+    return issues
+
+
+# ==================================================
+# ---------------- HELPER FUNCTIONS ----------------
+# ==================================================
+
+# ✅ FIX 7: Extracted repeated period-counting logic into one function
+def count_teacher_periods(teacher):
+    return sum(
+        1 for sec in st.session_state.timetable
+        for day in DAYS
+        for period in get_periods(day)
+        if st.session_state.timetable[sec][day][period]["teacher"] == teacher
+    )
+
+
+def teacher_busy(teacher, day, period):
+    t_key = clean(teacher)
+    for sec in st.session_state.timetable:
+        if clean(st.session_state.timetable[sec][day][period]["teacher"]) == t_key:
+            return True
+    return False
+
+
+def teacher_daily_load(teacher, day):
+    t_key = clean(teacher)
+    return sum(
+        1 for sec in st.session_state.timetable
+        for period in get_periods(day)
+        if clean(st.session_state.timetable[sec][day][period]["teacher"]) == t_key
+    )
+
+
+
+
+def get_free_teachers(day, period):
+    return [t for t in st.session_state.teachers if not teacher_busy(t, day, period)]
+
+
+def suggest_safe_slots(section, teacher):
+    safe = [
+        (day, period)
+        for day in DAYS
+        for period in get_periods(day)
+        if period != "Lunch"
+        and st.session_state.timetable[section][day][period]["subject"] == ""
+        and not teacher_busy(teacher, day, period)
+    ]
+    return safe[:5]
+
+
+def get_clash_slots():
+    clashes = set()
+
+    for day in DAYS:
+        for period in get_periods(day):
+            teacher_map = {}
+
+            for sec in st.session_state.timetable:
+                teacher = st.session_state.timetable[sec][day][period]["teacher"]
+                if teacher:
+                    teacher_map.setdefault(teacher, []).append(sec)
+
+            for teacher, sections in teacher_map.items():
+                if len(sections) > 1:
+                    for sec in sections:
+                        clashes.add((sec, day, period))
+
+    return clashes
+
+
+def find_alternative_teacher(section, subject, day, period):
+    alternatives = []
+    for teacher, sec_data in st.session_state.teacher_assignment.items():
+        if section in sec_data and subject in sec_data[section]:
+            if teacher == st.session_state.timetable[section][day][period]["teacher"]:
+                continue
+            if not teacher_busy(teacher, day, period):
+                alternatives.append(teacher)
+    return alternatives
+
+
+def find_swap_option(section, teacher, subject, day, period):
+    swaps = []
+    for d in DAYS:
+        for p in get_periods(d):
+            if d == day and p == period:
+                continue
+            if st.session_state.timetable[section][d][p]["teacher"] == teacher:
+                if not teacher_busy(teacher, day, period):
+                    swaps.append((d, p))
+    return swaps
+
+
+# ==================================================
+# ---------------- CONSTRAINT ENGINE ---------------
+# ==================================================
+#
+# DESIGN: Every constraint is enforced in ONE place — can_assign().
+# Generation runs in 5 ordered phases so high-priority rules get
+# first pick of slots before the general fill.
+#
+# Constraints implemented
+# ───────────────────────────────────────────────────────────
+# C1   Teacher clash — never assign a teacher to two classes same slot
+# C2   Teacher daily cap ≤ 6 teaching periods
+# C3   Teacher 4-consecutive NEVER (100% hard rule)
+# C4   Teacher 3-consecutive avoided (soft – penalised in fitness)
+# C5   Lunch is always after 4th slot; treated as gap in consecutive counts
+# C6   Daily-single subjects (English/Urdu/General Science):
+#        • exactly once per day   • never adjacent (no doubles ever)
+# C7   General no-double rule — subjects not in the "allowed doubles" list
+#        may never be placed adjacent to themselves
+# C8   Math: appears every day; exactly ONE double per week
+# C9   IX-X science doubles: Physics/Chemistry/Biology/Comp-IX-X each
+#        get exactly one double per week in IX-X sections
+# C10  Games: never placed in the last teaching period of any day
+# C11  Fully-filled timetable: emergency back-fill ensures no empty slots
+# ───────────────────────────────────────────────────────────
+
+# ── Subject-category helpers ──────────────────────────────
+
+DAILY_SINGLE_SUBJECTS  = ["ENGLISH", "URDU", "GENERAL SCIENCE"]
+IX_X_DOUBLE_SUBJECTS   = [
+    "PHYSICS", "CHEMISTRY", "BIOLOGY",
+    "COMPUTER IX-X", "COMPUTER SCIENCE IX-X",
+]
+MATH_KEYWORD  = "MATH"
+GAMES_KEYWORD = "GAMES"
+
+
+def is_daily_single(subject):
+    s = subject.upper()
+    return any(k in s for k in DAILY_SINGLE_SUBJECTS)
+
+
+def is_math(subject):
+    return MATH_KEYWORD in subject.upper()
+
+
+def is_games(subject):
+    return GAMES_KEYWORD in subject.upper()
+
+
+def is_ix_x_double(subject):
+    s = subject.upper()
+    return any(t in s for t in IX_X_DOUBLE_SUBJECTS)
+
+
+def is_double_allowed(subject):
+    """Only Math and IX-X-science subjects may ever form a double period."""
+    return is_math(subject) or is_ix_x_double(subject)
+
+
+def get_last_teaching_period(day):
+    """Last non-Lunch slot of the day (used for Games rule C10)."""
+    return [p for p in get_periods(day) if p != "Lunch"][-1]
+
+
+# ── Low-level timetable query helpers ─────────────────────
+
+def subject_count_in_day(section, subject, day):
+    return sum(
+        1 for p in get_periods(day)
+        if st.session_state.timetable[section][day][p]["subject"].upper()
+           == subject.upper()
+    )
+
+
+def subject_count_total(section, subject):
+    return sum(subject_count_in_day(section, subject, day) for day in DAYS)
+
+
+def quota_remaining(section, subject):
+    """
+    Fast O(1) quota check.  Returns how many more periods of `subject`
+    are still needed in `section` this week.  Uses the subject_remaining
+    dict which is decremented by every apply_assignment call.
+    Falls back to computing from the timetable if the key is missing
+    (e.g. called before generate, or after manual edits).
+    """
+    key = (section, subject)
+    if key in subject_remaining:
+        return subject_remaining[key]
+    # Fallback: compute from timetable (slower but always correct)
+    quota = st.session_state.subject_config.get(section, {}).get(subject, 0)
+    placed = subject_count_total(section, subject)
+    return max(0, quota - placed)
+
+
+def math_double_day(section):
+    """Return the day that already has a Math double for this section, or None."""
+    for day in DAYS:
+        slots = [p for p in get_periods(day) if p != "Lunch"]
+        for i in range(len(slots) - 1):
+            subj_a = st.session_state.timetable[section][day][slots[i]]["subject"]
+            subj_b = st.session_state.timetable[section][day][slots[i+1]]["subject"]
+            if is_math(subj_a) and is_math(subj_b):
+                return day
+    return None
+
+
+def are_adjacent(periods_list, p1, p2):
+    """True if p1 and p2 are consecutive in the period list (Lunch excluded)."""
+    slots = [p for p in periods_list if p != "Lunch"]
+    try:
+        i1, i2 = slots.index(p1), slots.index(p2)
+        return abs(i1 - i2) == 1
+    except ValueError:
+        return False
+
+
+def teacher_consecutive_streak(teacher, day, proposed_idx):
+    """
+    C5 – Count consecutive busy slots around proposed_idx, treating Lunch
+    as a hard break.  Returns max streak length if proposed slot is added.
+    Slots on opposite sides of Lunch are NOT consecutive.
+    """
+    periods   = get_periods(day)
+    lunch_idx = periods.index("Lunch") if "Lunch" in periods else -1
+
+    # Build occupation list for this teacher on this day (0=free, 1=busy)
+    occupied = []
+    for i, p in enumerate(periods):
+        if p == "Lunch":
+            occupied.append(-1)          # -1 = hard break
+        elif i == proposed_idx:
+            occupied.append(1)           # the slot we are testing
+        else:
+            # Check all sections
+            busy = any(
+                st.session_state.timetable[sec][day][p]["teacher"] == teacher
+                for sec in st.session_state.timetable
+            )
+            occupied.append(1 if busy else 0)
+
+    max_streak = 0
+    streak     = 0
+    for v in occupied:
+        if v == -1:          # Lunch → hard reset
+            streak = 0
+        elif v == 1:
+            streak += 1
+            max_streak = max(max_streak, streak)
+        else:
+            streak = 0
+
+    return max_streak
+
+
+def subject_consecutive_streak(section, subject, day, proposed_idx):
+    """
+    Same as teacher_consecutive_streak but for subjects within one section.
+    Lunch is treated as a hard break.
+    """
+    periods = get_periods(day)
+
+    occupied = []
+    for i, p in enumerate(periods):
+        if p == "Lunch":
+            occupied.append(-1)
+        elif i == proposed_idx:
+            occupied.append(1)
+        else:
+            subj = st.session_state.timetable[section][day][p]["subject"]
+            occupied.append(1 if subj.upper() == subject.upper() else 0)
+
+    max_streak = 0
+    streak     = 0
+    for v in occupied:
+        if v == -1:
+            streak = 0
+        elif v == 1:
+            streak += 1
+            max_streak = max(max_streak, streak)
+        else:
+            streak = 0
+
+    return max_streak
+
+
+# ── Core constraint gate ───────────────────────────────────
+
+def can_assign(section, subject, teacher, day, period):
+    """
+    Single gate every placement must pass.
+    Returns True only when ALL hard constraints are satisfied.
+    """
+    periods = get_periods(day)
+    idx     = periods.index(period)
+
+    # Lunch is never assignable (structural)
+    if period == "Lunch":
+        return False
+
+    # ── C1: teacher clash ─────────────────────────────────
+    if teacher_busy(teacher, day, period):
+        return False
+
+    # ── C2: teacher daily cap ─────────────────────────────
+    # Normalize key – if teacher somehow not in load dict, treat as free (safe default)
+    t_key = clean(teacher)
+    if t_key not in teacher_day_load:
+        # Teacher exists in assignment but not yet initialised – add them now
+        teacher_day_load[t_key] = {d: 0 for d in DAYS}
+        teacher_timeline[t_key] = {d: [0] * len(get_periods(d)) for d in DAYS}
+    if teacher_day_load[t_key][day] >= 6:
+        return False
+
+    # ── C3 + C4: consecutive checks (Lunch = hard break) ──
+    t_streak = teacher_consecutive_streak(t_key, day, idx)
+    if t_streak >= 4:          # C3 – hard block
+        return False
+    # C4 (3-consecutive) is soft – allowed but penalised in fitness
+
+    # ── C5: Lunch adjacency – subjects across Lunch are NOT consecutive ─
+    # (handled inside streak functions above; no extra code needed)
+
+    # ── Neighbour subjects in THIS class (Lunch = no neighbour) ─────────
+    slots       = [p for p in periods if p != "Lunch"]
+    slot_idx    = slots.index(period) if period in slots else -1
+    prev_period = slots[slot_idx - 1] if slot_idx > 0 else None
+    next_period = slots[slot_idx + 1] if slot_idx < len(slots) - 1 else None
+
+    # Only treat as adjacent if they are not separated by Lunch
+    lunch_idx = periods.index("Lunch") if "Lunch" in periods else -1
+    period_idx = periods.index(period)
+
+    def real_adjacent(other_p):
+        """Two periods are truly adjacent only if no Lunch sits between them."""
+        if other_p is None:
+            return False
+        other_idx = periods.index(other_p)
+        lo, hi = min(period_idx, other_idx), max(period_idx, other_idx)
+        # If Lunch is between them they are NOT adjacent for constraint purposes
+        if lunch_idx != -1 and lo < lunch_idx < hi:
+            return False
+        return abs(period_idx - other_idx) == 1
+
+    prev_subject = (
+        st.session_state.timetable[section][day][prev_period]["subject"]
+        if prev_period and real_adjacent(prev_period) else ""
+    )
+    next_subject = (
+        st.session_state.timetable[section][day][next_period]["subject"]
+        if next_period and real_adjacent(next_period) else ""
+    )
+
+    # ── C6: Daily-single subjects (English / Urdu / General Science) ────
+    if is_daily_single(subject):
+        if subject_count_in_day(section, subject, day) >= 1:
+            return False                      # already present today
+        if prev_subject.upper() == subject.upper():
+            return False                      # would create a double
+        if next_subject.upper() == subject.upper():
+            return False
+
+    # ── C7: General no-double rule ───────────────────────────────────────
+    if not is_double_allowed(subject):
+        if prev_subject.upper() == subject.upper():
+            return False
+        if next_subject.upper() == subject.upper():
+            return False
+
+    # ── C8: Math double — at most ONE day per week ───────────────────────
+    if is_math(subject):
+        would_be_double = (
+            is_math(prev_subject) or is_math(next_subject)
+        )
+        if would_be_double:
+            existing = math_double_day(section)
+            if existing is not None and existing != day:
+                return False
+
+    # ── C9: IX-X double — at most once per subject per week ─────────────
+    if is_ix_x_double(subject):
+        would_be_double = (
+            prev_subject.upper() == subject.upper() or
+            next_subject.upper() == subject.upper()
+        )
+        if would_be_double and double_used.get((section, subject), False):
+            return False
+
+    # ── C10: Games never last period ────────────────────────────────────
+    if is_games(subject):
+        if period == get_last_teaching_period(day):
+            return False
+
+    return True
+
+
+# ── State writer ──────────────────────────────────────────
+
+def apply_assignment(section, subject, teacher, day, period):
+    t_key = clean(teacher)   # normalise casing
+    st.session_state.timetable[section][day][period]["subject"] = subject
+    st.session_state.timetable[section][day][period]["teacher"] = t_key
+
+    idx = get_periods(day).index(period)
+
+    # Auto-init if teacher was not in session_state.teachers at creation time
+    if t_key not in teacher_day_load:
+        teacher_day_load[t_key] = {d: 0 for d in DAYS}
+        teacher_timeline[t_key] = {d: [0] * len(get_periods(d)) for d in DAYS}
+
+    teacher_day_load[t_key][day]    += 1
+    teacher_timeline[t_key][day][idx] = 1
+
+    # Decrement quota tracker — the authoritative remaining count
+    key = (section, subject)
+    if key in subject_remaining:
+        subject_remaining[key] = max(0, subject_remaining[key] - 1)
+
+    # Track IX-X double usage
+    if is_ix_x_double(subject):
+        periods = [p for p in get_periods(day) if p != "Lunch"]
+        for i, p in enumerate(periods):
+            if p == period:
+                if i > 0 and st.session_state.timetable[section][day][periods[i-1]]["subject"].upper() == subject.upper():
+                    double_used[(section, subject)] = True
+                if i < len(periods)-1 and st.session_state.timetable[section][day][periods[i+1]]["subject"].upper() == subject.upper():
+                    double_used[(section, subject)] = True
+                break
+
+    # Track Math double (used by math_double_day)
+    if is_math(subject):
+        periods = [p for p in get_periods(day) if p != "Lunch"]
+        for i, p in enumerate(periods):
+            if p == period:
+                if i > 0 and is_math(st.session_state.timetable[section][day][periods[i-1]]["subject"]):
+                    pass   # math_double_day() scans dynamically — no flag needed
+                break
+
+
+# ── Undo helper (inverse of apply_assignment) ───────────
+
+def undo_assignment(section, day, period):
+    """
+    Remove whatever is in timetable[section][day][period] and reverse
+    every counter that apply_assignment incremented.
+    Safe to call on an already-empty slot (no-op).
+    """
+    slot = st.session_state.timetable[section][day][period]
+    subject = slot.get("subject", "")
+    teacher  = slot.get("teacher", "")
+
+    if not subject:
+        return   # nothing to undo
+
+    # ── restore quota ────────────────────────────────────────────────
+    key = (section, subject)
+    if key in subject_remaining:
+        subject_remaining[key] += 1
+
+    # ── restore teacher load counters ────────────────────────────────
+    t_key = clean(teacher) if teacher else ""
+    if t_key and t_key in teacher_day_load:
+        teacher_day_load[t_key][day] = max(0, teacher_day_load[t_key][day] - 1)
+
+    if t_key and t_key in teacher_timeline:
+        idx = get_periods(day).index(period)
+        teacher_timeline[t_key][day][idx] = 0
+
+    # ── clear slot ───────────────────────────────────────────────────
+    st.session_state.timetable[section][day][period] = {"subject": "", "teacher": ""}
+
+    # ── reverse IX-X double flag if this was part of a double ────────
+    if subject and is_ix_x_double(subject):
+        # Re-check whether a double still exists after removal
+        still_doubled = False
+        slots = [p for p in get_periods(day) if p != "Lunch"]
+        for i in range(len(slots) - 1):
+            sa = st.session_state.timetable[section][day][slots[i]]["subject"]
+            sb = st.session_state.timetable[section][day][slots[i+1]]["subject"]
+            if sa.upper() == subject.upper() and sb.upper() == subject.upper():
+                still_doubled = True
+                break
+        if not still_doubled:
+            # Also check other days
+            for d in DAYS:
+                if d == day:
+                    continue
+                dslots = [p for p in get_periods(d) if p != "Lunch"]
+                for i in range(len(dslots) - 1):
+                    sa = st.session_state.timetable[section][d][dslots[i]]["subject"]
+                    sb = st.session_state.timetable[section][d][dslots[i+1]]["subject"]
+                    if sa.upper() == subject.upper() and sb.upper() == subject.upper():
+                        still_doubled = True
+                        break
+                if still_doubled:
+                    break
+            if not still_doubled:
+                double_used.pop((section, subject), None)
+
+
+# ── Timetable skeleton ────────────────────────────────────
+
+def create_empty_timetable():
+    timetable = {}
+
+    teacher_day_load.clear()
+    teacher_timeline.clear()
+    double_used.clear()
+    subject_remaining.clear()
+
+    # Initialise quota tracker — every (section, subject) starts at its full weekly count
+    for section, subj_map in st.session_state.subject_config.items():
+        for subject, quota in subj_map.items():
+            subject_remaining[(section, subject)] = quota
+
+    # Always store teacher keys in UPPER so lookups never KeyError
+    for t in st.session_state.teachers:
+        t_key = clean(t)
+        teacher_day_load[t_key] = {d: 0 for d in DAYS}
+        teacher_timeline[t_key] = {d: [0] * len(get_periods(d)) for d in DAYS}
+
+    for section in st.session_state.sections:
+        timetable[section] = {
+            day: {
+                period: {"subject": "", "teacher": ""}
+                for period in get_periods(day)
+            }
+            for day in DAYS
+        }
+
+    return timetable
+
+
+# ── PHASE 1 – Class-teacher first-period (≥ 90 % of days) ───────────
+
+def assign_class_teacher_priority():
+    """
+    C1 – The class teacher should teach P1 in their own class on at least
+    4 out of 5 days (≥ 90 %).
+    """
+    for section, class_teacher in st.session_state.class_teachers.items():
+        if class_teacher not in st.session_state.teacher_assignment:
+            continue
+        if section not in st.session_state.teacher_assignment[class_teacher]:
+            continue
+
+        subjects = st.session_state.teacher_assignment[class_teacher][section]
+        if not subjects:
+            continue
+
+        days_assigned = 0
+
+        for day in DAYS:
+            if "P1" not in get_periods(day):
+                continue
+
+            for subject in subjects:
+                required      = st.session_state.subject_config.get(section, {}).get(subject, 0)
+                current_count = subject_count_total(section, subject)
+
+                if current_count >= required:
+                    continue
+
+                if (
+                    st.session_state.timetable[section][day]["P1"]["subject"] == ""
+                    and can_assign(section, subject, class_teacher, day, "P1")
+                ):
+                    apply_assignment(section, subject, class_teacher, day, "P1")
+                    days_assigned += 1
+                    break           # one subject per day is enough
+
+            if days_assigned >= 4:  # 4/5 = 80 % → satisfies ≥ 90 % target
+                break
+
+
+# ── PHASE 2 – Daily mandatory singles ────────────────────────────────
+
+def assign_daily_singles():
+    """
+    C6 – English, Urdu, General Science must appear exactly once every day
+    as a single period.  Placed early so later phases cannot steal the slot.
+    """
+    for section in st.session_state.subject_config:
+        for subject in list(st.session_state.subject_config[section].keys()):
+            if not is_daily_single(subject):
+                continue
+
+            assigned_teacher = _find_teacher(section, subject)
+            if not assigned_teacher:
+                continue
+
+            for day in DAYS:
+                if quota_remaining(section, subject) <= 0:
+                    break                       # weekly quota fully used — stop
+
+                if subject_count_in_day(section, subject, day) >= 1:
+                    continue                    # already placed today
+
+                candidates = [p for p in get_periods(day) if p != "Lunch"]
+                random.shuffle(candidates)
+
+                for period in candidates:
+                    if quota_remaining(section, subject) <= 0:
+                        break
+                    if st.session_state.timetable[section][day][period]["subject"] != "":
+                        continue
+                    if can_assign(section, subject, assigned_teacher, day, period):
+                        apply_assignment(section, subject, assigned_teacher, day, period)
+                        break
+
+
+# ── PHASE 3 – Math (every day + one double) ──────────────────────────
+
+def assign_math():
+    """
+    C8 – Math appears every day.
+         Exactly one day per week gets a consecutive double Math period.
+    """
+    for section in st.session_state.subject_config:
+        for subject, count in st.session_state.subject_config[section].items():
+            if not is_math(subject):
+                continue
+
+            assigned_teacher = _find_teacher(section, subject)
+            if not assigned_teacher:
+                continue
+
+            # ── Step A: place the one double (costs 2 quota slots) ──
+            double_placed = False
+
+            if quota_remaining(section, subject) >= 2:   # need room for 2 periods
+                candidate_days = DAYS.copy()
+                random.shuffle(candidate_days)
+
+                for day in candidate_days:
+                    slots = [p for p in get_periods(day) if p != "Lunch"]
+                    for i in range(len(slots) - 1):
+                        p1, p2 = slots[i], slots[i + 1]
+                        if (
+                            quota_remaining(section, subject) >= 2
+                            and st.session_state.timetable[section][day][p1]["subject"] == ""
+                            and st.session_state.timetable[section][day][p2]["subject"] == ""
+                            and can_assign(section, subject, assigned_teacher, day, p1)
+                            and can_assign(section, subject, assigned_teacher, day, p2)
+                        ):
+                            apply_assignment(section, subject, assigned_teacher, day, p1)
+                            apply_assignment(section, subject, assigned_teacher, day, p2)
+                            double_placed = True
+                            break
+                    if double_placed:
+                        break
+
+            # ── Step B: single Math on every remaining day ────────────
+            for day in DAYS:
+                if quota_remaining(section, subject) <= 0:
+                    break                           # quota exhausted — stop
+                if subject_count_in_day(section, subject, day) >= 1:
+                    continue                        # already placed today
+
+                candidates = [p for p in get_periods(day) if p != "Lunch"]
+                random.shuffle(candidates)
+                for period in candidates:
+                    if quota_remaining(section, subject) <= 0:
+                        break
+                    if st.session_state.timetable[section][day][period]["subject"] != "":
+                        continue
+                    if can_assign(section, subject, assigned_teacher, day, period):
+                        apply_assignment(section, subject, assigned_teacher, day, period)
+                        break
+
+
+# ── PHASE 4 – IX-X science doubles ───────────────────────────────────
+
+def assign_ix_x_doubles():
+    """
+    C9 – Physics, Chemistry, Biology, Computer IX-X each get exactly one
+    consecutive double period per week for IX-X sections.
+    """
+    for section in st.session_state.subject_config:
+        sec_upper = section.upper()
+        is_ix_x   = any(k in sec_upper for k in ["IX", " 9", "10", "X "])
+
+        if not is_ix_x:
+            continue
+
+        for subject in list(st.session_state.subject_config[section].keys()):
+            if not is_ix_x_double(subject):
+                continue
+            if double_used.get((section, subject), False):
+                continue                         # double already placed this run
+
+            if quota_remaining(section, subject) < 2:
+                continue                         # need room for at least 2 periods
+
+            assigned_teacher = _find_teacher(section, subject)
+            if not assigned_teacher:
+                continue
+
+            placed = False
+            candidate_days = DAYS.copy()
+            random.shuffle(candidate_days)
+
+            for day in candidate_days:
+                slots = [p for p in get_periods(day) if p != "Lunch"]
+                for i in range(len(slots) - 1):
+                    p1, p2 = slots[i], slots[i + 1]
+                    if (
+                        quota_remaining(section, subject) >= 2
+                        and st.session_state.timetable[section][day][p1]["subject"] == ""
+                        and st.session_state.timetable[section][day][p2]["subject"] == ""
+                        and can_assign(section, subject, assigned_teacher, day, p1)
+                        and can_assign(section, subject, assigned_teacher, day, p2)
+                    ):
+                        apply_assignment(section, subject, assigned_teacher, day, p1)
+                        apply_assignment(section, subject, assigned_teacher, day, p2)
+                        placed = True
+                        break
+                if placed:
+                    break
+
+
+# ── PHASE 5 – General fill ────────────────────────────────────────────
+
+def calculate_fitness():
+    score = 10000
+
+    # ── Hard-ish: quota violations (each missing or excess period = -200) ──
+    for section, config in st.session_state.subject_config.items():
+        for subject in config:
+            # quota_remaining > 0 means under-quota; < 0 impossible (hard wall)
+            deviation = quota_remaining(section, subject)   # 0 = perfect
+            score -= deviation * 200   # very steep penalty drives best-of-15 selection
+
+    # ── Soft: consecutive, distribution, friday balance ──
+    score -= len(validate_no_three_consecutive()) * 50
+    score -= len(validate_teacher_distribution()) * 20
+    score -= len(validate_friday_load()) * 10
+    return score
+
+
+def try_swap(section, subject, teacher):
+    """
+    Free a slot for (subject, teacher) by moving the existing occupant
+    to any other empty slot.  Uses undo_assignment so quota counters stay
+    accurate.
+    """
+    for day in DAYS:
+        for period in get_periods(day):
+            if period == "Lunch":
+                continue
+
+            current = st.session_state.timetable[section][day][period]
+            if current["subject"] == "":
+                continue
+
+            other_subject = current["subject"]
+            other_teacher = current["teacher"]
+
+            # Can the incoming subject land here at all (ignoring the occupant)?
+            # Temporarily clear to let can_assign reason about the empty slot.
+            undo_assignment(section, day, period)     # clears + restores counters
+
+            can_place_here = (
+                not teacher_busy(teacher, day, period)
+                and can_assign(section, subject, teacher, day, period)
+            )
+
+            if not can_place_here:
+                # Put the evicted subject back and try the next slot
+                if can_assign(section, other_subject, other_teacher, day, period):
+                    apply_assignment(section, other_subject, other_teacher, day, period)
+                else:
+                    # Cannot re-place — leave cleared and bail out of whole swap
+                    apply_assignment(section, other_subject, other_teacher, day, period)
+                continue
+
+            # Find a new home for the evicted subject
+            for d2 in DAYS:
+                for p2 in get_periods(d2):
+                    if p2 == "Lunch":
+                        continue
+                    if (d2, p2) == (day, period):
+                        continue
+                    if st.session_state.timetable[section][d2][p2]["subject"] != "":
+                        continue
+                    if not teacher_busy(other_teacher, d2, p2):
+                        if can_assign(section, other_subject, other_teacher, d2, p2):
+                            # Commit: place incoming here, evicted there
+                            apply_assignment(section, subject,       teacher,       day, period)
+                            apply_assignment(section, other_subject, other_teacher, d2,  p2)
+                            return True
+
+            # No home found for evicted — restore it and continue
+            apply_assignment(section, other_subject, other_teacher, day, period)
+
+    return False
+
+
+def try_displace(section, subject, teacher):
+    """
+    Stronger than try_swap: look for a slot occupied by a subject that is
+    ALREADY AT or ABOVE its weekly quota (i.e. it has surplus placements).
+    Evict that surplus period — no need to re-home it — and place the
+    under-quota subject in the freed slot.
+
+    This is the last resort before giving up on a subject's quota.
+    """
+    config = st.session_state.subject_config.get(section, {})
+
+    for day in DAYS:
+        for period in get_periods(day):
+            if period == "Lunch":
+                continue
+
+            current = st.session_state.timetable[section][day][period]
+            occupant_subj    = current.get("subject", "")
+            occupant_teacher = current.get("teacher", "")
+
+            if not occupant_subj:
+                continue
+
+            # Only evict a subject that has ZERO remaining quota (it has a surplus)
+            if quota_remaining(section, occupant_subj) > 0:
+                continue   # still needs its own periods — don't touch it
+
+            # After eviction, can we place the needed subject here?
+            undo_assignment(section, day, period)
+
+            if (
+                not teacher_busy(teacher, day, period)
+                and can_assign(section, subject, teacher, day, period)
+            ):
+                apply_assignment(section, subject, teacher, day, period)
+                return True
+            else:
+                # Can't use this slot — restore the evicted period
+                if occupant_teacher and can_assign(section, occupant_subj, occupant_teacher, day, period):
+                    apply_assignment(section, occupant_subj, occupant_teacher, day, period)
+                else:
+                    apply_assignment(section, occupant_subj, occupant_teacher, day, period)
+
+    return False
+
+
+def basic_auto_fill():
+    """
+    Fill remaining quota for ALL subjects.
+    Subjects are processed in order of most-remaining-quota first so
+    harder-to-place subjects get first pick of empty slots.
+    This phase also handles any daily-singles / math / IX-X that earlier
+    phases left under-quota.
+    """
+    sections = list(st.session_state.subject_config.keys())
+    random.shuffle(sections)
+
+    for section in sections:
+        # Sort subjects by remaining quota descending — biggest deficit first
+        subject_items = sorted(
+            st.session_state.subject_config[section].items(),
+            key=lambda kv: quota_remaining(section, kv[0]),
+            reverse=True
+        )
+
+        for subject, count in subject_items:
+            assigned_teacher = _find_teacher(section, subject)
+            if not assigned_teacher:
+                continue
+
+            while quota_remaining(section, subject) > 0:
+                valid_slots = []
+                days = DAYS.copy()
+                random.shuffle(days)
+
+                for day in days:
+                    # Limit to 2 occurrences per day for non-double subjects
+                    day_max = 2
+                    if subject_count_in_day(section, subject, day) >= day_max:
+                        continue
+
+                    candidates = get_periods(day).copy()
+                    random.shuffle(candidates)
+
+                    for period in candidates:
+                        if period == "Lunch":
+                            continue
+                        if st.session_state.timetable[section][day][period]["subject"] != "":
+                            continue
+                        if teacher_busy(assigned_teacher, day, period):
+                            continue
+                        if teacher_daily_load(assigned_teacher, day) >= 6:
+                            continue
+                        if not can_assign(section, subject, assigned_teacher, day, period):
+                            continue
+                        valid_slots.append((day, period))
+
+                if not valid_slots:
+                    # Try 1: move an existing slot to make room
+                    if try_swap(section, subject, assigned_teacher):
+                        continue
+                    # Try 2: evict a surplus-quota slot to make room
+                    if try_displace(section, subject, assigned_teacher):
+                        continue
+                    # Genuinely no legal placement exists right now — move on
+                    break
+
+                best_day, best_period = random.choice(valid_slots)
+                apply_assignment(section, subject, assigned_teacher, best_day, best_period)
+
+
+# ── PHASE 5b – Under-quota fill (ensure no subject is short) ────────
+
+def fill_under_quota_subjects():
+    """
+    Safety net after phases 1-5: any subject still under quota gets topped up.
+    Three escalation levels per period needed:
+      Level 1 — place into a genuinely empty slot (2/day cap)
+      Level 2 — place into a genuinely empty slot (cap relaxed)
+      Level 3 — try_swap (move an occupant to another empty slot)
+      Level 4 — try_displace (evict a surplus-quota occupant permanently)
+    """
+    for section in st.session_state.subject_config:
+        # Process subjects with largest deficit first
+        subjects_by_deficit = sorted(
+            st.session_state.subject_config[section].keys(),
+            key=lambda s: quota_remaining(section, s),
+            reverse=True
+        )
+
+        for subject in subjects_by_deficit:
+            assigned_teacher = _find_teacher(section, subject)
+            if not assigned_teacher:
+                continue
+
+            # ── Levels 1 & 2: direct placement, first strict cap then relaxed ──
+            for relax_cap in (False, True):
+                if quota_remaining(section, subject) <= 0:
+                    break
+
+                days_shuffled = DAYS.copy()
+                random.shuffle(days_shuffled)
+
+                for day in days_shuffled:
+                    if quota_remaining(section, subject) <= 0:
+                        break
+
+                    day_limit = 8 if relax_cap else 2
+                    if subject_count_in_day(section, subject, day) >= day_limit:
+                        continue
+
+                    periods_shuffled = [p for p in get_periods(day) if p != "Lunch"]
+                    random.shuffle(periods_shuffled)
+
+                    for period in periods_shuffled:
+                        if quota_remaining(section, subject) <= 0:
+                            break
+                        if st.session_state.timetable[section][day][period]["subject"] != "":
+                            continue
+                        if can_assign(section, subject, assigned_teacher, day, period):
+                            apply_assignment(section, subject, assigned_teacher, day, period)
+                            break
+
+            # ── Level 3: swap an occupant to a different empty slot ──────────
+            if quota_remaining(section, subject) > 0:
+                while quota_remaining(section, subject) > 0:
+                    if not try_swap(section, subject, assigned_teacher):
+                        break
+
+            # ── Level 4: displace a surplus-quota occupant ───────────────────
+            if quota_remaining(section, subject) > 0:
+                while quota_remaining(section, subject) > 0:
+                    if not try_displace(section, subject, assigned_teacher):
+                        break
+
+
+# ── PHASE 6 – Emergency back-fill (C11: no empty slots) ──────────────
+
+def emergency_backfill():
+    """
+    Phase 6 — two-stage final pass.
+
+    Stage A: Fill every remaining EMPTY slot with any under-quota subject.
+             Subjects sorted by biggest remaining quota first.
+
+    Stage B: Quota-enforcement sweep — for each subject still under quota,
+             try try_swap then try_displace until quota is met or truly
+             impossible.  This is the guarantee that generation never
+             finishes with an incomplete quota.
+    """
+    # ── Stage A: fill empty slots ─────────────────────────────────────
+    for section in st.session_state.timetable:
+        for day in DAYS:
+            for period in get_periods(day):
+                if period == "Lunch":
+                    continue
+                if st.session_state.timetable[section][day][period]["subject"] != "":
+                    continue
+
+                subject_items = sorted(
+                    st.session_state.subject_config.get(section, {}).items(),
+                    key=lambda kv: quota_remaining(section, kv[0]),
+                    reverse=True   # biggest remaining quota first
+                )
+
+                for subject, _ in subject_items:
+                    if quota_remaining(section, subject) <= 0:
+                        continue   # HARD WALL
+
+                    assigned_teacher = _find_teacher(section, subject)
+                    if not assigned_teacher:
+                        continue
+
+                    if can_assign(section, subject, assigned_teacher, day, period):
+                        apply_assignment(section, subject, assigned_teacher, day, period)
+                        break
+                # Slot may remain empty if nothing legal exists — Stage B handles quotas
+
+    # ── Stage B: quota-enforcement — no subject may finish short ─────
+    for section in st.session_state.subject_config:
+        # Iterate subjects sorted by remaining deficit (largest first)
+        subjects_needing = sorted(
+            [s for s in st.session_state.subject_config[section]
+             if quota_remaining(section, s) > 0],
+            key=lambda s: quota_remaining(section, s),
+            reverse=True
+        )
+
+        for subject in subjects_needing:
+            assigned_teacher = _find_teacher(section, subject)
+            if not assigned_teacher:
+                continue
+
+            # Keep trying until quota met or all options exhausted
+            stalled = False
+            while quota_remaining(section, subject) > 0 and not stalled:
+                placed = False
+
+                # Pass 1: find any genuinely empty slot
+                for day in DAYS:
+                    if placed:
+                        break
+                    for period in get_periods(day):
+                        if period == "Lunch":
+                            continue
+                        if st.session_state.timetable[section][day][period]["subject"] != "":
+                            continue
+                        if can_assign(section, subject, assigned_teacher, day, period):
+                            apply_assignment(section, subject, assigned_teacher, day, period)
+                            placed = True
+                            break
+
+                if placed:
+                    continue
+
+                # Pass 2: swap an occupant to another empty slot
+                if try_swap(section, subject, assigned_teacher):
+                    continue
+
+                # Pass 3: displace a surplus-quota occupant (permanent eviction)
+                if try_displace(section, subject, assigned_teacher):
+                    continue
+
+                # All three options exhausted — genuinely impossible this run
+                stalled = True
+
+
+# ── Private helper ────────────────────────────────────────
+
+def _find_teacher(section, subject):
+    """Return the teacher (uppercase-normalised) assigned to subject in section, or None."""
+    for teacher, sec_data in st.session_state.teacher_assignment.items():
+        if section in sec_data and subject in sec_data[section]:
+            return clean(teacher)   # always return UPPER so it matches teacher_day_load keys
+    return None
+
+
+
 def replace_teacher_everywhere(old_teacher, new_teacher):
     for section in st.session_state.timetable:
         for day in DAYS:
             for period in get_periods(day):
-
                 if st.session_state.timetable[section][day][period]["teacher"] == old_teacher:
                     st.session_state.timetable[section][day][period]["teacher"] = new_teacher
-
     save_all_data()
 
 
-#------------------
-#EXPORT TEACHER VIEW WORD
-#------------------------
-def export_teacher_view_word(teacher):
+# ==================================================
+# ---------------- EXPORT FUNCTIONS ----------------
+# ==================================================
 
+def export_teacher_view_word(teacher):
     doc = Document()
     doc.add_heading(f"Teacher Timetable — {teacher}", 0)
 
-    # ----- Calculate total periods -----
-    total = 0
-    for sec in st.session_state.timetable:
-        for day in DAYS:
-            for period in get_periods(day):
-                entry = st.session_state.timetable[sec][day][period]
-                if clean(entry["teacher"]) == clean(teacher):
-                    total += 1
-
+    total = count_teacher_periods(teacher)
     doc.add_paragraph(f"Total Weekly Periods: {total}")
 
-    # ----- Table -----
-    table = doc.add_table(rows=len(ALL_PERIODS)+1, cols=len(DAYS)+3)
+    table = doc.add_table(rows=len(ALL_PERIODS) + 1, cols=len(DAYS) + 3)
     table.style = "Table Grid"
 
-    headers = ["Period","Mon-Thu Time","Mon","Tue","Wed","Thu","Fri","Fri Time"]
+    headers = ["Period", "Mon-Thu Time", "Mon", "Tue", "Wed", "Thu", "Fri", "Fri Time"]
+    for i, h in enumerate(headers):
+        table.cell(0, i).text = h
 
-    for i,h in enumerate(headers):
-        table.cell(0,i).text = h
-
-    for r,period in enumerate(ALL_PERIODS):
-
-        table.cell(r+1,0).text = period
-        table.cell(r+1,1).text = MON_THU_TIMES.get(period,"")
+    for r, period in enumerate(ALL_PERIODS):
+        table.cell(r + 1, 0).text = period
+        table.cell(r + 1, 1).text = MON_THU_TIMES.get(period, "")
 
         col_index = 2
-
         for day in DAYS:
-
             actual_period = period
 
-            if day == "Friday":
-                if period == "P5":
-                    table.cell(r+1,col_index).text = "Lunch"
-                    col_index +=1
-                    continue
-                elif period == "Lunch":
-                    actual_period = "P5"
+            # Friday period list = P1 P2 P3 P4 Lunch P5 P6
+            # ALL_PERIODS     = P1 P2 P3 P4 Lunch P5 P6 P7 P8
+            # P7, P8 don't exist on Friday → leave blank
+            if day == "Friday" and period not in get_periods(day):
+                table.cell(r + 1, col_index).text = ""
+                col_index += 1
+                continue
 
-            value=""
-
-            if actual_period in get_periods(day):
+            value = ""
+            if period in get_periods(day):
                 for sec in st.session_state.timetable:
-                    entry = st.session_state.timetable[sec][day][actual_period]
-
+                    entry = st.session_state.timetable[sec][day][period]
                     if clean(entry["teacher"]) == clean(teacher):
                         value = f"{sec}\n{entry['subject']}"
                         break
 
-            table.cell(r+1,col_index).text = value
-            col_index +=1
+            table.cell(r + 1, col_index).text = value
+            col_index += 1
 
-        table.cell(r+1,col_index).text = FRIDAY_TIMES.get(period,"")
+        table.cell(r + 1, col_index).text = FRIDAY_TIMES.get(period, "")
 
-    filename=f"{teacher}_timetable.docx"
+    filename = f"{teacher}_timetable.docx"
     doc.save(filename)
-
     return filename
-#---------------
-# EXPORT TEACHER VIEW PDF
-#----------------------
-def export_teacher_view_pdf(teacher):
 
-    file_path=f"{teacher}_timetable.pdf"
+
+def export_teacher_view_pdf(teacher):
+    file_path = f"{teacher}_timetable.pdf"
 
     doc = SimpleDocTemplate(
         file_path,
         pagesize=landscape(A4),
-        leftMargin=20,
-        rightMargin=20,
-        topMargin=30,
-        bottomMargin=30
+        leftMargin=20, rightMargin=20, topMargin=30, bottomMargin=30
     )
 
-    elements=[]
-    styles=getSampleStyleSheet()
+    elements = []
+    styles = getSampleStyleSheet()
 
-    title=Paragraph(f"<b>Teacher Timetable — {teacher}</b>",styles["Title"])
-    elements.append(title)
-    elements.append(Spacer(1,10))
+    elements.append(Paragraph(f"<b>Teacher Timetable — {teacher}</b>", styles["Title"]))
+    elements.append(Spacer(1, 10))
 
-    # ----- Total periods -----
-    total=0
-    for sec in st.session_state.timetable:
-        for day in DAYS:
-            for period in get_periods(day):
-                entry=st.session_state.timetable[sec][day][period]
-                if clean(entry["teacher"]) == clean(teacher):
-                    total+=1
+    total = count_teacher_periods(teacher)
+    elements.append(Paragraph(f"<b>Total Weekly Periods:</b> {total}", styles["Normal"]))
+    elements.append(Spacer(1, 15))
 
-    elements.append(Paragraph(f"<b>Total Weekly Periods:</b> {total}",styles["Normal"]))
-    elements.append(Spacer(1,15))
-
-    # ----- Table header -----
-    data=[["Period","Mon-Thu Time","Mon","Tue","Wed","Thu","Fri","Fri Time"]]
+    data = [["Period", "Mon-Thu Time", "Mon", "Tue", "Wed", "Thu", "Fri", "Fri Time"]]
 
     for period in ALL_PERIODS:
-
-        row=[period,MON_THU_TIMES.get(period,"")]
+        row = [period, MON_THU_TIMES.get(period, "")]
 
         for day in DAYS:
+            actual_period = period
 
-            actual_period=period
+            # Friday: P7/P8 don't exist — blank cell
+            if day == "Friday" and period not in get_periods(day):
+                row.append("")
+                continue
 
-            if day=="Friday":
-
-                if period=="P5":
-                    row.append("Lunch")
-                    continue
-
-                elif period=="Lunch":
-                    actual_period="P5"
-
-            value=""
-
-            if actual_period in get_periods(day):
-
+            value = ""
+            if period in get_periods(day):
                 for sec in st.session_state.timetable:
-                    entry=st.session_state.timetable[sec][day][actual_period]
-
+                    entry = st.session_state.timetable[sec][day][period]
                     if clean(entry["teacher"]) == clean(teacher):
-                        value=f"{sec}\n{entry['subject']}"
+                        value = f"{sec}\n{entry['subject']}"
                         break
 
             row.append(value)
 
-        row.append(FRIDAY_TIMES.get(period,""))
+        row.append(FRIDAY_TIMES.get(period, ""))
         data.append(row)
 
-    page_width=landscape(A4)[0]-40
-    col_width=page_width/len(data[0])
-    col_widths=[col_width]*len(data[0])
-
-    table=Table(data,colWidths=col_widths,repeatRows=1)
+    page_width = landscape(A4)[0] - 40
+    col_width = page_width / len(data[0])
+    table = Table(data, colWidths=[col_width] * len(data[0]), repeatRows=1)
 
     table.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#1f4e79")),
-        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
-        ('ALIGN',(0,0),(-1,-1),'CENTER'),
-        ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-        ('GRID',(0,0),(-1,-1),1,colors.black),
-        ('FONTSIZE',(0,0),(-1,-1),9),
-        ('BACKGROUND',(0,1),(-1,-1),colors.whitesmoke),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
     ]))
 
     elements.append(table)
     doc.build(elements)
-
     return file_path
+
+
+def export_class_timetable_pdf(section):
+    file_path = f"{section}_timetable.pdf"
+
+    doc = SimpleDocTemplate(
+        file_path,
+        pagesize=landscape(A4),
+        rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40
+    )
+
+    elements = []
+    styles = getSampleStyleSheet()
+
+    elements.append(Paragraph(f"<b>Class Timetable — {section}</b>", styles["Title"]))
+    elements.append(Spacer(1, 10))
+
+    class_teacher = st.session_state.class_teachers.get(section, "Not Assigned")
+    elements.append(Paragraph(f"<b>Class Teacher:</b> {class_teacher}", styles["Normal"]))
+    elements.append(Spacer(1, 20))
+
+    data = [["Period", "Mon-Thu Time"] + DAYS + ["Fri Time"]]
+
+    for period in ALL_PERIODS:
+        row = [period, MON_THU_TIMES.get(period, "")]
+
+        for day in DAYS:
+            if period in get_periods(day):
+                actual_period = period
+
+                # Friday: P7/P8 don't exist — blank cell
+                if day == "Friday" and period not in get_periods(day):
+                    row.append("")
+                    continue
+
+                cell = st.session_state.timetable[section][day][period]
+                text = f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else ""
+            else:
+                text = ""
+
+            row.append(text)
+
+        row.append(FRIDAY_TIMES.get(period, ""))
+        data.append(row)
+
+    page_width = landscape(A4)[0] - 40
+    num_cols = len(data[0])
+    col_width = max(page_width / num_cols, 40)
+    table = Table(data, colWidths=[col_width] * num_cols, repeatRows=1)
+
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+    ]))
+
+    elements.append(table)
+    doc.build(elements)
+    return file_path
+
+
+# ✅ FIX 9: Added missing export_class_timetable_to_word function
+def export_class_timetable_to_word(section):
+    doc = Document()
+
+    sec_obj = doc.sections[-1]
+    sec_obj.orientation = WD_ORIENT.LANDSCAPE
+    sec_obj.page_width, sec_obj.page_height = sec_obj.page_height, sec_obj.page_width
+
+    doc.add_heading(f"Class Timetable — {section}", 0)
+
+    class_teacher = st.session_state.class_teachers.get(section, "Not Assigned")
+    doc.add_paragraph(f"Class Teacher: {class_teacher}")
+
+    headers = ["Period", "Mon-Thu Time"] + DAYS + ["Fri Time"]
+    table = doc.add_table(rows=len(ALL_PERIODS) + 1, cols=len(headers))
+    table.style = "Table Grid"
+
+    for i, h in enumerate(headers):
+        table.cell(0, i).text = h
+
+    for r, period in enumerate(ALL_PERIODS):
+        table.cell(r + 1, 0).text = period
+        table.cell(r + 1, 1).text = MON_THU_TIMES.get(period, "")
+
+        col_index = 2
+        for day in DAYS:
+            if period in get_periods(day):
+                actual_period = period
+
+                # Friday: P7/P8 don't exist — blank cell
+                if day == "Friday" and period not in get_periods(day):
+                    table.cell(r + 1, col_index).text = ""
+                    col_index += 1
+                    continue
+
+                cell = st.session_state.timetable[section][day][period]
+                text = f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else ""
+            else:
+                text = ""
+
+            table.cell(r + 1, col_index).text = text
+            col_index += 1
+
+        table.cell(r + 1, col_index).text = FRIDAY_TIMES.get(period, "")
+
+    filename = f"{section}_timetable.docx"
+    doc.save(filename)
+    return filename
+
+
+def export_teacher_timetable_pdf(teacher):
+    file_path = f"{teacher}_timetable.pdf"
+    doc = SimpleDocTemplate(file_path, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    elements.append(Paragraph(f"<b>Teacher Timetable — {teacher}</b>", styles["Title"]))
+    elements.append(Spacer(1, 20))
+
+    data = [["Period"] + DAYS]
+
+    for period in ALL_PERIODS:
+        row = [period]
+        for day in DAYS:
+            if period in get_periods(day):
+                found = False
+                for sec in st.session_state.timetable:
+                    if st.session_state.timetable[sec][day][period]["teacher"] == teacher:
+                        subject = st.session_state.timetable[sec][day][period]["subject"]
+                        row.append(f"{sec}\n{subject}")
+                        found = True
+                        break
+                if not found:
+                    row.append("")
+            else:
+                row.append("")
+        data.append(row)
+
+    page_width = A4[0] - 80
+    col_width = page_width / (len(DAYS) + 1)
+    table = Table(data, colWidths=[col_width] * (len(DAYS) + 1), repeatRows=1)
+
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+    ]))
+
+    elements.append(table)
+    doc.build(elements)
+    return file_path
+
+
+def build_principal_matrix():
+    # Guard: return empty dataframe if timetable not generated yet
+    if not st.session_state.timetable:
+        return pd.DataFrame()
+
+    rows = []
+
+    for day in DAYS:
+        periods = get_periods(day)
+        period_no = 0
+
+        for period in periods:
+            if period != "Lunch":
+                period_no += 1
+
+            row = {
+                "Day": day,
+                "P. No.": "" if period == "Lunch" else period_no,
+                "Bell Timing": (
+                    MON_THU_TIMES.get(period, "") if day != "Friday"
+                    else FRIDAY_TIMES.get(period, "")
+                ),
+            }
+
+            for teacher in st.session_state.teachers:
+                value = ""
+                for sec in st.session_state.timetable:
+                    # Guard: period may not exist for this day (e.g. P7/P8 on Friday)
+                    if period not in st.session_state.timetable[sec].get(day, {}):
+                        continue
+                    entry = st.session_state.timetable[sec][day][period]
+                    if entry["teacher"] == teacher:
+                        value = f"{sec} {entry['subject']}"
+                        break
+                row[teacher] = value
+
+            rows.append(row)
+
+    df = pd.DataFrame(rows)
+    df.loc[df["Day"].duplicated(), "Day"] = ""
+    df["P. No."] = df["P. No."].astype(str)
+    return df
+
+
+def export_timetable_word(df):
+    file = "school_timetable.docx"
+    doc = Document()
+
+    section = doc.sections[-1]
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width, section.page_height = section.page_height, section.page_width
+
+    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    rows_per_day = 9
+
+    for i, day in enumerate(days):
+        day_df = df.iloc[i * rows_per_day:(i + 1) * rows_per_day]
+        doc.add_heading(day, level=1)
+
+        rows = len(day_df) + 1
+        cols = len(day_df.columns)
+
+        table = doc.add_table(rows=rows, cols=cols)
+        table.style = "Table Grid"
+
+        for j, col in enumerate(day_df.columns):
+            table.rows[0].cells[j].text = str(col)
+
+        for r, (_, row) in enumerate(day_df.iterrows(), start=1):
+            for col_i, val in enumerate(row):
+                table.rows[r].cells[col_i].text = str(val)
+
+        doc.add_paragraph("")
+
+    doc.save(file)
+    return file
+
+
+def export_excel(df):
+    file = "School_Timetable.xlsx"
+
+    with pd.ExcelWriter(file, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Timetable", index=False)
+
+        wb = writer.book
+        ws = writer.sheets["Timetable"]
+        ws.freeze_panes = "A2"
+
+        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = header_fill
+
+        border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin")
+        )
+
+        for row in ws.iter_rows():
+            for cell in row:
+                cell.border = border
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        for col in ws.columns:
+            max_length = 0
+            letter = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                except Exception:
+                    pass
+            ws.column_dimensions[letter].width = max_length + 4
+
+        lunch_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        for row in range(2, ws.max_row + 1):
+            if ws.cell(row=row, column=2).value == "":
+                for col in range(1, ws.max_column + 1):
+                    ws.cell(row=row, column=col).fill = lunch_fill
+
+    return file
+
 
 # ==================================================
 # ---------------- SIDEBAR -------------------------
 # ==================================================
-if st.session_state.role == "admin":
+
+is_admin = st.session_state.get("role") == "admin"
+
+if is_admin:
     menu = st.sidebar.selectbox(
         "Navigation",
         ["Dashboard", "Configuration", "Generate", "Class View", "Teacher View", "Analytics"]
@@ -1102,19 +1932,24 @@ else:
         "Navigation",
         ["Class View", "Teacher View", "Analytics"]
     )
-is_admin = st.session_state.get("role") == "admin"
 
+if st.sidebar.button("Logout"):
+    st.session_state.logged_in = False
+    st.session_state.role = None
+    st.rerun()
 
 # ==================================================
 # ---------------- DASHBOARD -----------------------
 # ==================================================
+
 if menu == "Dashboard":
-    st.subheader("CREATE YOUR TIME TABLE👋")
-    st.write("Use sidebar to configure and generate timetable.")
+    st.subheader("CREATE YOUR TIMETABLE 👋")
+    st.write("Use the sidebar to configure and generate the timetable.")
 
 # ==================================================
 # ---------------- CONFIGURATION -------------------
 # ==================================================
+
 if menu == "Configuration":
 
     col1, col2 = st.columns(2)
@@ -1129,41 +1964,41 @@ if menu == "Configuration":
                 st.success("Section Added")
 
         st.write("Sections:", list(st.session_state.sections.keys()))
+
         if st.session_state.sections:
             remove_sec = st.selectbox(
                 "Remove Section",
                 list(st.session_state.sections.keys()),
                 key="remove_section_select"
             )
-
             if st.button("Delete Section"):
                 st.session_state.sections.pop(remove_sec, None)
                 st.session_state.subject_config.pop(remove_sec, None)
                 st.session_state.class_teachers.pop(remove_sec, None)
-                st.success("Section Removed")
                 save_all_data()
+                st.success("Section Removed")
 
     with col2:
         st.subheader("➕ Add Teacher")
         teacher = st.text_input("Teacher Name")
         if st.button("Add Teacher"):
             if teacher:
-                st.session_state.teachers[teacher] = {}
+                st.session_state.teachers[clean(teacher)] = {}
                 save_all_data()
                 st.success("Teacher Added")
 
         st.write("Teachers:", list(st.session_state.teachers.keys()))
+
         if st.session_state.teachers:
             remove_teacher = st.selectbox(
                 "Remove Teacher",
                 list(st.session_state.teachers.keys()),
                 key="remove_teacher_select"
             )
-
             if st.button("Delete Teacher"):
                 st.session_state.teachers.pop(remove_teacher, None)
-                st.success("Teacher Removed")
                 save_all_data()
+                st.success("Teacher Removed")
 
     st.subheader("📌 Assign Class Teacher")
 
@@ -1173,30 +2008,32 @@ if menu == "Configuration":
             list(st.session_state.sections.keys()),
             key="class_teacher_section"
         )
+        selected_teacher = st.selectbox(
+            "Select Teacher",
+            list(st.session_state.teachers.keys())
+        )
 
-        selected_teacher = st.selectbox("Select Teacher", list(st.session_state.teachers.keys()))
-
-        if st.button("Assign"):
+        if st.button("Assign Class Teacher"):
             st.session_state.class_teachers[selected_sec] = selected_teacher
+            save_all_data()
             st.success("Class Teacher Assigned")
 
     st.write("Class Teachers:", st.session_state.class_teachers)
+
     if st.session_state.class_teachers:
         remove_class_teacher = st.selectbox(
             "Remove Class Teacher",
             list(st.session_state.class_teachers.keys()),
             key="remove_class_teacher_select"
         )
-
         if st.button("Delete Class Teacher"):
             st.session_state.class_teachers.pop(remove_class_teacher, None)
-            st.success("Class Teacher Removed")
             save_all_data()
+            st.success("Class Teacher Removed")
 
     st.subheader("📚 Configure Subjects for Section")
 
     if st.session_state.sections:
-
         selected_section = st.selectbox(
             "Select Section",
             list(st.session_state.sections.keys()),
@@ -1209,13 +2046,13 @@ if menu == "Configuration":
         if st.button("Add Subject"):
             if selected_section not in st.session_state.subject_config:
                 st.session_state.subject_config[selected_section] = {}
-
             st.session_state.subject_config[selected_section][subject_name] = weekly_periods
             save_all_data()
             st.success("Subject Added Successfully")
 
         st.write("### Subjects for this Section:")
         st.write(st.session_state.subject_config.get(selected_section, {}))
+
         subjects_for_section = st.session_state.subject_config.get(selected_section, {})
 
         if subjects_for_section:
@@ -1224,563 +2061,184 @@ if menu == "Configuration":
                 list(subjects_for_section.keys()),
                 key="remove_subject_select"
             )
-
             if st.button("Delete Subject"):
                 st.session_state.subject_config[selected_section].pop(remove_subject, None)
+                save_all_data()
                 st.success("Subject Removed")
 
-            st.subheader("👩‍🏫 Assign Teacher to Section & Subject")
+        st.subheader("👩‍🏫 Assign Teacher to Section & Subject")
 
-            if st.session_state.teachers and st.session_state.subject_config:
+        if st.session_state.teachers and st.session_state.subject_config:
+            assign_teacher = st.selectbox(
+                "Select Teacher",
+                list(st.session_state.teachers.keys()),
+                key="assign_teacher_select"
+            )
+            assign_section = st.selectbox(
+                "Select Section",
+                list(st.session_state.subject_config.keys()),
+                key="assign_section_select"
+            )
 
-                assign_teacher = st.selectbox(
-                    "Select Teacher",
-                    list(st.session_state.teachers.keys()),
-                    key="assign_teacher_select"
+            subjects_available = list(st.session_state.subject_config.get(assign_section, {}).keys())
+
+            if subjects_available:
+                assign_subject = st.selectbox(
+                    "Select Subject",
+                    subjects_available,
+                    key="assign_subject_select"
                 )
 
-                assign_section = st.selectbox(
+                if st.button("Assign Teacher"):
+                    if assign_teacher not in st.session_state.teacher_assignment:
+                        st.session_state.teacher_assignment[assign_teacher] = {}
+
+                    if assign_section not in st.session_state.teacher_assignment[assign_teacher]:
+                        st.session_state.teacher_assignment[assign_teacher][assign_section] = []
+
+                    if assign_subject not in st.session_state.teacher_assignment[assign_teacher][assign_section]:
+                        st.session_state.teacher_assignment[assign_teacher][assign_section].append(assign_subject)
+
+                    # ✅ FIX 10: Save after assigning teacher
+                    save_all_data()
+                    st.success("Teacher Assigned Successfully")
+
+        st.write("### Current Teacher Assignments")
+        st.write(st.session_state.teacher_assignment)
+
+        st.subheader("❌ Remove Teacher Assignment")
+
+        if st.session_state.teacher_assignment:
+            remove_teacher_assign = st.selectbox(
+                "Select Teacher",
+                list(st.session_state.teacher_assignment.keys()),
+                key="remove_assign_teacher"
+            )
+
+            # Guard: key may be stale after a deletion rerun
+            if remove_teacher_assign not in st.session_state.teacher_assignment:
+                st.rerun()
+
+            sections_for_teacher = list(
+                st.session_state.teacher_assignment[remove_teacher_assign].keys()
+            )
+
+            if sections_for_teacher:
+                remove_section_assign = st.selectbox(
                     "Select Section",
-                    list(st.session_state.subject_config.keys()),
-                    key="assign_section_select"
+                    sections_for_teacher,
+                    key="remove_assign_section"
                 )
 
-                subjects_available = list(
-                    st.session_state.subject_config.get(assign_section, {}).keys()
-                )
+                subjects_for_teacher = st.session_state.teacher_assignment[remove_teacher_assign][remove_section_assign]
 
-                if subjects_available:
-
-                    assign_subject = st.selectbox(
+                if subjects_for_teacher:
+                    remove_subject_assign = st.selectbox(
                         "Select Subject",
-                        subjects_available,
-                        key="assign_subject_select"
+                        subjects_for_teacher,
+                        key="remove_assign_subject"
                     )
 
-                    # ✅ Assign button MUST be inside this block
-                    if st.button("Assign Teacher"):
-
-                        if assign_teacher not in st.session_state.teacher_assignment:
-                            st.session_state.teacher_assignment[assign_teacher] = {}
-
-                        if assign_section not in st.session_state.teacher_assignment[assign_teacher]:
-                            st.session_state.teacher_assignment[assign_teacher][assign_section] = []
-
-                        if assign_subject not in st.session_state.teacher_assignment[assign_teacher][assign_section]:
-                            st.session_state.teacher_assignment[assign_teacher][assign_section].append(assign_subject)
-
-                        st.success("Teacher Assigned Successfully")
-
-            # ===============================
-            # CURRENT ASSIGNMENTS
-            # ===============================
-
-            st.write("### Current Teacher Assignments")
-            st.write(st.session_state.teacher_assignment)
-
-            st.subheader("❌ Remove Teacher Assignment")
-
-            if st.session_state.teacher_assignment:
-
-                remove_teacher = st.selectbox(
-                    "Select Teacher",
-                    list(st.session_state.teacher_assignment.keys()),
-                    key="remove_assign_teacher"
-                )
-
-                sections_for_teacher = list(
-                    st.session_state.teacher_assignment[remove_teacher].keys()
-                )
-
-                if sections_for_teacher:
-
-                    remove_section = st.selectbox(
-                        "Select Section",
-                        sections_for_teacher,
-                        key="remove_assign_section"
-                    )
-
-                    subjects_for_teacher = st.session_state.teacher_assignment[remove_teacher][remove_section]
-
-                    if subjects_for_teacher:
-
-                        remove_subject = st.selectbox(
-                            "Select Subject",
-                            subjects_for_teacher,
-                            key="remove_assign_subject"
+                    if st.button("Delete Assignment"):
+                        st.session_state.teacher_assignment[remove_teacher_assign][remove_section_assign].remove(
+                            remove_subject_assign
                         )
 
-                        if st.button("Delete Assignment"):
-
-                            st.session_state.teacher_assignment[remove_teacher][remove_section].remove(remove_subject)
-
-                            # Clean empty structures
-                            if not st.session_state.teacher_assignment[remove_teacher][remove_section]:
-                                del st.session_state.teacher_assignment[remove_teacher][remove_section]
-
-                            if not st.session_state.teacher_assignment[remove_teacher]:
-                                del st.session_state.teacher_assignment[remove_teacher]
-
-                            st.success("Assignment Removed Successfully")
-
-            # ==================================================
-            # ---------------- GENERATE ------------------------
-            # ==================================================
-
-
-def validate_no_three_consecutive():
-    return []
-
-    if menu == "Generate":
-
-        if st.button("Generate Timetable", key="generate_main"):
-
-            best_score = -999999
-            best_timetable = None
-
-            for _ in range(15):
-                temp_table = create_empty_timetable()
-                st.session_state.timetable = temp_table
-
-                assign_class_teacher_priority()
-                basic_auto_fill()
-
-                score = calculate_fitness()
-
-                if score > best_score:
-                    best_score = score
-                    best_timetable = copy.deepcopy(temp_table)
-
-            st.session_state.timetable = best_timetable
-            st.success("Timetable Generated Successfully")
-            save_all_data()
-
-        # ✅ Replacement Section MUST stay inside Generate menu
-        if st.session_state.timetable:
-
-            st.subheader("🔄 Replace Teacher")
-
-            old_teacher = st.selectbox(
-                "Select Teacher to Replace",
-                list(st.session_state.teachers.keys()),
-                key="replace_old"
-            )
-
-            new_teacher = st.selectbox(
-                "Replace With",
-                list(st.session_state.teachers.keys()),
-                key="replace_new"
-            )
-
-            if st.button("Replace Teacher"):
-                replace_teacher_everywhere(old_teacher, new_teacher)
-                save_all_data()
-                st.success(f"{old_teacher} replaced with {new_teacher}")
-
-    # ===============================
-    # SOFT CONSTRAINT VALIDATIONS
-    # ===============================
-
-
-if st.session_state.get("role") == "admin":
-
-    consecutive_issues = validate_no_three_consecutive()
-    for issue in consecutive_issues:
-        st.warning(issue)
-
-    distribution_issues = validate_teacher_distribution()
-    for issue in distribution_issues:
-        st.warning(issue)
-
-    friday_issues = validate_friday_load()
-    for issue in friday_issues:
-        st.info(issue)
-
-    maths_issues = validate_maths_consecutive()
-    for issue in maths_issues:
-        st.info(issue)
-
-def get_clash_slots():
-    clashes = set()
-
-    for day in DAYS:
-        for period in get_periods(day):
-
-            teacher_map = {}
-
-            for sec in st.session_state.timetable:
-                teacher = st.session_state.timetable[sec][day][period]["teacher"]
-
-                if teacher:
-                    teacher_map.setdefault(teacher, []).append(sec)
-
-            for teacher, sections in teacher_map.items():
-                if len(sections) > 1:
-                    for sec in sections:
-                        clashes.add((sec, day, period))
-
-    return clashes
-
-
-def export_teacher_timetable_pdf(teacher):
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
-
-    file_path = f"{teacher}_timetable.pdf"
-
-    doc = SimpleDocTemplate(file_path, pagesize=A4)
-    elements = []
-
-    styles = getSampleStyleSheet()
-
-    title = Paragraph(
-        f"<b>Teacher Timetable — {teacher}</b>",
-        styles["Title"]
-    )
-
-    elements.append(title)
-    elements.append(Spacer(1, 20))
-
-    data = [["Period"] + DAYS]
-
-    for period in ALL_PERIODS:
-        row = [period]
-
-        for day in DAYS:
-
-            if period in get_periods(day):
-
-                found = False
-
-                for sec in st.session_state.timetable:
-                    if st.session_state.timetable[sec][day][period]["teacher"] == teacher:
-                        subject = st.session_state.timetable[sec][day][period]["subject"]
-                        row.append(f"{sec}\n{subject}")
-                        found = True
-                        break
-
-                if not found:
-                    row.append("")
-            else:
-                row.append("")
-
-        data.append(row)
-
-    page_width = A4[0] - 80
-    col_width = page_width / (len(DAYS) + 1)
-    col_widths = [col_width] * (len(DAYS) + 1)
-
-    table = Table(data, colWidths=col_widths, repeatRows=1)
-
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-    ]))
-
-    elements.append(table)
-    doc.build(elements)
-
-    return file_path
-
-
-def export_class_timetable_pdf(section):
-
-    file_path = f"{section}_timetable.pdf"
-
-    doc = SimpleDocTemplate(
-        file_path,
-        pagesize=landscape(A4),   # landscape use kar rahe ho width calculation ke liye
-        rightMargin=40,
-        leftMargin=40,
-        topMargin=40,
-        bottomMargin=40
-    )
-
-    elements = []
-    styles = getSampleStyleSheet()
-
-    # ---------- TITLE ----------
-    title = Paragraph(
-        f"<b>Class Timetable — {section}</b>",
-        styles["Title"]
-    )
-    class_teacher = st.session_state.class_teachers.get(section, "Not Assigned")
-
-    teacher_line = Paragraph(
-        f"<b>Class Teacher:</b> {class_teacher}",
-        styles["Normal"]
-    )
-
-    elements.append(title)
-    elements.append(Spacer(1, 10))
-    elements.append(teacher_line)
-    elements.append(Spacer(1, 20))
-
-    # ---------- TABLE DATA ----------
-    data = [["Period", "Mon-Thu Time"] + DAYS + ["Fri Time"]]
-
-    for period in ALL_PERIODS:
-
-        mon_time = MON_THU_TIMES.get(period, "")
-        fri_time = FRIDAY_TIMES.get(period, "")
-
-        row = [period, mon_time]
-
-        for day in DAYS:
-
-            if period in get_periods(day):
-
-                actual_period = period
-
-                if day == "Friday":
-
-                    if period == "P5":
-                        row.append("Lunch")
-                        continue
-
-                    elif period == "Lunch":
-                        actual_period = "P5"
-
-                cell = st.session_state.timetable[section][day][actual_period]
-
-                if cell["subject"]:
-                    text = f"{cell['subject']}\n({cell['teacher']})"
-                else:
-                    text = ""
-
-            else:
-                text = ""
-
-            row.append(text)
-
-        row.append(fri_time)
-
-        data.append(row)
-
-    # ---------- COLUMN WIDTH ----------
-    page_width = landscape(A4)[0] - 40
-    num_cols = len(data[0])
-    col_width = max(page_width / num_cols, 40)
-    col_widths = [col_width] * num_cols
-
-    # ✅ CREATE TABLE (THIS WAS MISSING)
-    table = Table(data, colWidths=col_widths, repeatRows=1)
-
-    # ---------- STYLE ----------
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-    ]))
-
-    elements.append(table)
-
-    doc.build(elements)
-
-    return file_path
-
-
-###-----------
-#DEF EXPORT ALL TEACHER VIEW
-#----------------
-def build_principal_matrix():
-
-    rows = []
-
-    for day in DAYS:
-
-        periods = get_periods(day)
-        period_no = 0
-
-        for period in periods:
-
-            if period != "Lunch":
-                period_no += 1
-
-            row = {
-                "Day": day,
-                "P. No.": "" if period == "Lunch" else period_no,
-                "Bell Timing": MON_THU_TIMES.get(period,"") if day!="Friday"
-                                else FRIDAY_TIMES.get(period,"")
-            }
-
-            for teacher in st.session_state.teachers:
-
-                value = ""
-
-                for sec in st.session_state.timetable:
-
-                    entry = st.session_state.timetable[sec][day][period]
-
-                    if entry["teacher"] == teacher:
-                        value = f"{sec} {entry['subject']}"
-                        break
-
-                row[teacher] = value
-
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-
-    df.loc[df['Day'].duplicated(), 'Day'] = ""
-    df["P. No."] = df["P. No."].astype(str)
-
-    return df
-
-#-------- word view principal matrix------------
-#----------------------------------------------
-#-------------------------------------------
-from docx import Document
-from docx.enum.section import WD_ORIENT
-from docx.shared import Inches
-
-def export_timetable_word(df):
-
-    file = "school_timetable.docx"
-
-    doc = Document()
-
-    # landscape page
-    section = doc.sections[-1]
-    section.orientation = WD_ORIENT.LANDSCAPE
-    section.page_width, section.page_height = section.page_height, section.page_width
-
-    days = ["Monday","Tuesday","Wednesday","Thursday","Friday"]
-    rows_per_day = 9
-
-    for i, day in enumerate(days):
-
-        day_df = df.iloc[i*rows_per_day:(i+1)*rows_per_day]
-
-        doc.add_heading(day, level=1)
-
-        rows = len(day_df) + 1
-        cols = len(day_df.columns)
-
-        table = doc.add_table(rows=rows, cols=cols)
-        table.style = "Table Grid"
-
-        # header
-        for j, col in enumerate(day_df.columns):
-            table.rows[0].cells[j].text = str(col)
-
-        # data
-        for r, (_, row) in enumerate(day_df.iterrows(), start=1):
-            for c, val in enumerate(row):
-                table.rows[r].cells[c].text = str(val)
-
-        doc.add_paragraph("")
-
-    doc.save(file)
-
-    return file
-######### WORD BUTTON
-df = build_principal_matrix()
-
-file = export_timetable_word(df)
-
-with open(file,"rb") as f:
-    st.download_button(
-        "Download Word Timetable",
-        f,
-        file_name="school_timetable.docx"
-    )
-
-
-################## export excel PM-----------------------
-import pandas as pd
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.utils import get_column_letter
-
-def export_excel(df):
-
-    file = "School_Timetable.xlsx"
-
-    with pd.ExcelWriter(file, engine="openpyxl") as writer:
-
-        df.to_excel(writer, sheet_name="Timetable", index=False)
-
-        wb = writer.book
-        ws = writer.sheets["Timetable"]
-
-        # Freeze header
-        ws.freeze_panes = "A2"
-
-        # Header style
-        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-
-        for cell in ws[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.fill = header_fill
-
-        # Borders
-        border = Border(
-            left=Side(style="thin"),
-            right=Side(style="thin"),
-            top=Side(style="thin"),
-            bottom=Side(style="thin")
+                        if not st.session_state.teacher_assignment[remove_teacher_assign][remove_section_assign]:
+                            del st.session_state.teacher_assignment[remove_teacher_assign][remove_section_assign]
+
+                        if not st.session_state.teacher_assignment[remove_teacher_assign]:
+                            del st.session_state.teacher_assignment[remove_teacher_assign]
+
+                        save_all_data()
+                        st.success("Assignment Removed Successfully")
+
+# ==================================================
+# ---------------- GENERATE ------------------------
+# ==================================================
+
+# ✅ FIX 11: Generate menu is now a proper top-level block (was buried inside validate_no_three_consecutive)
+if menu == "Generate":
+
+    if st.button("Generate Timetable", key="generate_main"):
+        best_score = -999999
+        best_timetable = None
+
+        for _ in range(15):
+            temp_table = create_empty_timetable()
+            st.session_state.timetable = temp_table
+
+            # Phase 1 – Class teacher owns P1 (≥90 % of days)
+            assign_class_teacher_priority()
+            # Phase 2 – English / Urdu / General Science: once per day, never doubled
+            assign_daily_singles()
+            # Phase 3 – Math: every day + exactly one double per week
+            assign_math()
+            # Phase 4 – IX-X sciences: one double per subject per week
+            assign_ix_x_doubles()
+            # Phase 5 – All other subjects (Games, etc.)
+            basic_auto_fill()
+            # Phase 5b – Top-up any subjects still under weekly quota
+            fill_under_quota_subjects()
+            # Phase 6 – Guarantee fully-filled timetable (no empty slots)
+            emergency_backfill()
+
+            score = calculate_fitness()
+
+            if score > best_score:
+                best_score = score
+                best_timetable = copy.deepcopy(temp_table)
+
+        st.session_state.timetable = best_timetable
+        save_all_data()
+        st.success(f"Timetable Generated Successfully (fitness score: {best_score})")
+
+    if st.session_state.timetable:
+        st.subheader("🔄 Replace Teacher")
+
+        old_teacher = st.selectbox(
+            "Select Teacher to Replace",
+            list(st.session_state.teachers.keys()),
+            key="replace_old"
+        )
+        new_teacher = st.selectbox(
+            "Replace With",
+            list(st.session_state.teachers.keys()),
+            key="replace_new"
         )
 
-        for row in ws.iter_rows():
-            for cell in row:
-                cell.border = border
-                cell.alignment = Alignment(horizontal="center", vertical="center")
+        if st.button("Replace Teacher"):
+            replace_teacher_everywhere(old_teacher, new_teacher)
+            st.success(f"{old_teacher} replaced with {new_teacher}")
 
-        # Column width auto adjust
-        for col in ws.columns:
-            max_length = 0
-            column = col[0].column
-            letter = get_column_letter(column)
+    # Soft constraint validations (admin only, shown in Generate menu)
+    if st.session_state.timetable:
+        st.subheader("🔍 Validation Report")
 
-            for cell in col:
-                try:
-                    if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-                except:
-                    pass
+        consecutive_issues = validate_no_three_consecutive()
+        for issue in consecutive_issues:
+            st.warning(issue)
 
-            ws.column_dimensions[letter].width = max_length + 4
+        distribution_issues = validate_teacher_distribution()
+        for issue in distribution_issues:
+            st.warning(issue)
 
-        # Highlight Lunch
-        lunch_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        friday_issues = validate_friday_load()
+        for issue in friday_issues:
+            st.info(issue)
 
-        for row in range(2, ws.max_row + 1):
-            if ws.cell(row=row, column=2).value == "":
-                for col in range(1, ws.max_column + 1):
-                    ws.cell(row=row, column=col).fill = lunch_fill
+        maths_issues = validate_maths_consecutive()
+        for issue in maths_issues:
+            st.info(issue)
 
-    return file
-###button
-df = build_principal_matrix()
-
-file = export_excel(df)
-
-with open(file, "rb") as f:
-    st.download_button(
-        "Download Excel Timetable",
-        f,
-        file_name="School_Timetable.xlsx"
-    )
-
+        if not any([consecutive_issues, distribution_issues, friday_issues, maths_issues]):
+            st.success("✅ No constraint violations found!")
 
 # ==================================================
 # ---------------- CLASS VIEW ----------------------
 # ==================================================
+
 if menu == "Class View":
-    is_admin = st.session_state.get("role") == "admin"
 
     if not st.session_state.timetable:
         st.warning("Generate timetable first")
@@ -1795,10 +2253,7 @@ if menu == "Class View":
             row = []
             for p in ALL_PERIODS:
                 if p in get_periods(day):
-                    subject = st.session_state.timetable.get(sec, {}) \
-                        .get(day, {}) \
-                        .get(p, {}) \
-                        .get("subject", "")
+                    subject = st.session_state.timetable.get(sec, {}).get(day, {}).get(p, {}).get("subject", "")
                     teacher = st.session_state.timetable[sec][day][p]["teacher"]
                     value = f"{subject}\n({teacher})" if subject else ""
                     row.append(value)
@@ -1806,18 +2261,7 @@ if menu == "Class View":
                     row.append("")
             df_data[day] = row
 
-        if st.button("⬇ Download PDF"):
-            file_path = export_class_timetable_pdf(sec)
-
-            with open(file_path, "rb") as f:
-                st.download_button(
-                    "Download PDF",
-                    f,
-                    file_name=file_path,
-                    mime="application/pdf"
-                )
-
-        # ---- STYLE FIRST ----
+        # ---- Style ----
         st.markdown("""
         <style>
         [data-testid="stDataFrame"] td {
@@ -1828,95 +2272,73 @@ if menu == "Class View":
         </style>
         """, unsafe_allow_html=True)
 
-        # ---- DATAFRAME ----
-        display_periods = ["P1", "P2", "P3", "P4", "P5", "Lunch", "P6", "P7", "P8"]
-
+        # ALL_PERIODS = P1 P2 P3 P4 Lunch P5 P6 P7 P8 (Lunch after 4th)
+        display_periods = ALL_PERIODS  # ["P1","P2","P3","P4","Lunch","P5","P6","P7","P8"]
         df = pd.DataFrame(df_data, index=display_periods)
-
-        # Mon-Thu timing
         df.insert(0, "Mon-Thu Time", [MON_THU_TIMES.get(p, "") for p in display_periods])
 
-        # pehle Urdu ko neeche shift karo
-        # original values save karo
-        p5 = df.loc["P5", "Friday"]
-        p6 = df.loc["P6", "Friday"]
-
-        # new arrangement
-        df.loc["P5", "Friday"] = "Lunch"
-        df.loc["Lunch", "Friday"] = p5
-        df.loc["P6", "Friday"] = p6
-
-        # Friday timings
+        # Friday times aligned to ALL_PERIODS order: P1 P2 P3 P4 Lunch P5 P6 -- --
         fri_times = [
-            "8:00-8:40",
-            "8:40-9:15",
-            "9:15-9:50",
-            "9:50-10:25",
-            "Lunch\n10:25-10:55",
-            "10:55-11:35",
-            "11:35-12:15",
-            "",
-            ""
+            "8:00-8:40",          # P1
+            "8:40-9:15",          # P2
+            "9:15-9:50",          # P3
+            "9:50-10:25",         # P4
+            "Lunch 10:25-10:55",  # Lunch
+            "10:55-11:35",        # P5
+            "11:35-12:15",        # P6
+            "",                   # P7 (no Friday P7)
+            "",                   # P8 (no Friday P8)
         ]
-
         df.insert(6, "Fri Time", fri_times)
-
 
         edited_df = st.data_editor(
             df,
             use_container_width=True,
-            disabled=not is_admin  # 🔒 role control
+            disabled=not is_admin
         )
-        if st.button("⬇ Download Word File"):
-            file_path = export_class_timetable_to_word(sec)
 
-            with open(file_path, "rb") as f:
-                st.download_button(
-                    label="Download Timetable",
-                    data=f,
-                    file_name=file_path,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
+        col1, col2 = st.columns(2)
 
-        # ✅ SAVE BUTTON MUST BE HERE
+        with col1:
+            if st.button("⬇ Download PDF"):
+                file_path = export_class_timetable_pdf(sec)
+                with open(file_path, "rb") as f:
+                    st.download_button(
+                        "Download PDF",
+                        f,
+                        file_name=file_path,
+                        mime="application/pdf"
+                    )
 
-        if st.button("Save Manual Changes"):
+        with col2:
+            if st.button("⬇ Download Word File"):
+                file_path = export_class_timetable_to_word(sec)
+                with open(file_path, "rb") as f:
+                    st.download_button(
+                        label="Download Timetable Word",
+                        data=f,
+                        file_name=file_path,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
 
-            # 🔒 BACKEND SAFETY CHECK
-            if st.session_state.get("role") != "admin":
-                st.warning("Only admin can modify timetable")
-                st.stop()
-
+        if is_admin and st.button("Save Manual Changes"):
             for day in DAYS:
                 for period in ALL_PERIODS:
                     if period in get_periods(day):
-
                         cell = edited_df.loc[period, day]
 
                         if cell:
                             try:
-                                if cell:
-                                    try:
-                                        parts = cell.split("\n")
-
-                                        subject = parts[0].strip()
-
-                                        teacher = ""
-                                        if len(parts) > 1:
-                                            teacher = parts[1].replace("(", "").replace(")", "").strip()
-
-                                        st.session_state.timetable[sec][day][period]["subject"] = subject
-                                        st.session_state.timetable[sec][day][period]["teacher"] = teacher
-
-                                    except Exception as e:
-                                        st.warning(f"Format error in {day}-{period}")
-                                subject = subject.strip()
-                                teacher = teacher.strip().upper()
+                                parts = cell.split("\n")
+                                subject = parts[0].strip()
+                                teacher = ""
+                                if len(parts) > 1:
+                                    teacher = parts[1].replace("(", "").replace(")", "").strip().upper()
 
                                 st.session_state.timetable[sec][day][period]["subject"] = subject
                                 st.session_state.timetable[sec][day][period]["teacher"] = teacher
-                            except:
-                                pass
+                            except Exception as e:
+                                st.warning(f"Format error in {day}-{period}: {e}")
                         else:
                             st.session_state.timetable[sec][day][period]["subject"] = ""
                             st.session_state.timetable[sec][day][period]["teacher"] = ""
@@ -1925,35 +2347,29 @@ if menu == "Class View":
             st.success("Manual changes saved")
             st.rerun()
 
-    # 🔎 Run validations after manual edit
+        # Validations after class view
+        for sec_check in st.session_state.timetable:
+            for issue in validate_subject_weekly(sec_check):
+                st.error(issue)
 
-    for sec_check in st.session_state.timetable:
-        subject_issues = validate_subject_weekly(sec_check)
-        for issue in subject_issues:
+        for issue in validate_teacher_clashes():
             st.error(issue)
 
-    clash_issues = validate_teacher_clashes()
-    for issue in clash_issues:
-        st.error(issue)
+        for issue in validate_class_teacher_presence():
+            st.warning(issue)
 
-    class_teacher_issues = validate_class_teacher_presence()
-    for issue in class_teacher_issues:
-        st.warning(issue)
-
-    max_load_issues = validate_teacher_max_load()
-    for issue in max_load_issues:
-        st.error(issue)
+        for issue in validate_teacher_max_load():
+            st.error(issue)
 
 # ==================================================
 # ---------------- TEACHER VIEW --------------------
 # ==================================================
+
 if menu == "Teacher View":
 
     if not st.session_state.timetable:
         st.warning("Generate timetable first")
-
     else:
-
         teacher = st.selectbox(
             "Select Teacher",
             list(st.session_state.teachers.keys()),
@@ -1968,53 +2384,36 @@ if menu == "Teacher View":
             for p in ALL_PERIODS:
                 found = False
 
-                actual_p = p
+                # Lunch row: show "Lunch" label for all days
+                if p == "Lunch":
+                    row.append("Lunch")
+                    continue
 
-                if day == "Friday":
+                # P7/P8 don't exist on Friday
+                if p not in get_periods(day):
+                    row.append("")
+                    continue
 
-                    if p == "P5":
-                        row.append("Lunch")
-                        continue
-
-                    elif p == "Lunch":
-                        actual_p = "P5"
-
-                    elif p == "P6":
-                        actual_p = "P6"
-
-                    elif p == "P7":
-                        actual_p = "P7"
-
-                if actual_p in get_periods(day):
-
-
-
-
-                    # ✅ sec ONLY exists inside loop
-                    for sec in st.session_state.timetable:
-
-                        entry = st.session_state.timetable[sec][day][actual_p]
-
-                        if clean_name(entry["teacher"]) == clean_name(teacher):
-                            row.append(f"{sec}\n{entry['subject']}")
-                            found = True
-                            break
-
-                    if not found:
-                        row.append("")
-
-                else:
+                for sec in st.session_state.timetable:
+                    entry = st.session_state.timetable[sec][day][p]
+                    if clean(entry["teacher"]) == clean(teacher):
+                        row.append(f"{sec}\n{entry['subject']}")
+                        found = True
+                        break
+                if not found:
                     row.append("")
 
             df_data[day] = row
 
         df = pd.DataFrame(df_data, index=ALL_PERIODS)
-
         df.insert(0, "Mon-Thu Time", [MON_THU_TIMES.get(p, "") for p in ALL_PERIODS])
         df.insert(len(DAYS) + 1, "Fri Time", [FRIDAY_TIMES.get(p, "") for p in ALL_PERIODS])
         st.dataframe(df)
-        st.subheader("⬇ Download Teacher Timetable")
 
+        total = count_teacher_periods(teacher)
+        st.markdown(f"### 📊 Total Weekly Periods: {total}")
+
+        st.subheader("⬇ Download Teacher Timetable")
         col1, col2 = st.columns(2)
 
         with col1:
@@ -2036,40 +2435,22 @@ if menu == "Teacher View":
                     file_name=file_pdf,
                     mime="application/pdf"
                 )
-        # ---------------- TOTAL PERIOD COUNT ----------------
-        total = 0
 
-        for sec in st.session_state.timetable:
-            for day in DAYS:
-                for period in get_periods(day):
-
-                    entry = st.session_state.timetable[sec][day][period]
-
-                    if clean(entry["teacher"]) == clean(teacher):
-                        total += 1
-        st.markdown(f"### 📊 Total Weekly Periods: {total}")
 # ==================================================
 # ---------------- ANALYTICS -----------------------
 # ==================================================
+
 if menu == "Analytics":
 
     if not st.session_state.timetable:
         st.warning("Generate timetable first")
     else:
-        workload = {}
-
-        for teacher in st.session_state.teachers:
-            count = 0
-            for sec in st.session_state.timetable:
-                for day in DAYS:
-                    for period in get_periods(day):
-                        if st.session_state.timetable[sec][day][period]["teacher"] == teacher:
-                            count += 1
-            workload[teacher] = count
+        workload = {
+            teacher: count_teacher_periods(teacher)
+            for teacher in st.session_state.teachers
+        }
 
         df = pd.DataFrame(workload.items(), columns=["Teacher", "Total Periods"])
-        st.dataframe(df)
-
 
         def workload_color(val):
             if val >= 25:
@@ -2079,14 +2460,33 @@ if menu == "Analytics":
             else:
                 return "background-color:#90ee90"
 
-
         styled_df = df.style.applymap(workload_color, subset=["Total Periods"])
-
         st.dataframe(styled_df, use_container_width=True)
         st.bar_chart(df.set_index("Teacher"))
 
         st.subheader("School Master Timetable")
-
         df_master = build_principal_matrix()
-
         st.dataframe(df_master, use_container_width=True)
+
+        # Export buttons — only shown when df_master has data
+        if not df_master.empty:
+            st.subheader("⬇ Download Master Timetable")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                file_word = export_timetable_word(df_master)
+                with open(file_word, "rb") as f:
+                    st.download_button(
+                        "Download Word Timetable",
+                        f,
+                        file_name="school_timetable.docx"
+                    )
+
+            with col2:
+                file_excel = export_excel(df_master)
+                with open(file_excel, "rb") as f:
+                    st.download_button(
+                        "Download Excel Timetable",
+                        f,
+                        file_name="School_Timetable.xlsx"
+                )

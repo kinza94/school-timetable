@@ -17,6 +17,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 import random
+import re
 import copy
 import os
 
@@ -543,21 +544,39 @@ def find_swap_option(section, teacher, subject, day, period):
 # C2   Teacher daily cap ≤ 6 teaching periods
 # C3   Teacher 4-consecutive NEVER (100% hard rule)
 # C4   Teacher 3-consecutive avoided (soft – penalised in fitness)
-# C5   Lunch is always after 4th slot; treated as gap in consecutive counts
-# C6   Daily-single subjects (English/Urdu/General Science):
-#        • exactly once per day   • never adjacent (no doubles ever)
-# C7   General no-double rule — subjects not in the "allowed doubles" list
-#        may never be placed adjacent to themselves
-# C8   Math: appears every day; exactly ONE double per week
+# C5   Lunch is always after 4th slot; treated as hard gap in consecutive
+#        counts — P4 and P5 across lunch are NEVER counted consecutive
+# C6   Daily-single subjects — at most ONCE per day per class:
+#        Sindhi, Islamiat, English, Urdu, General Science, Arabic,
+#        Geography, History, Social Studies
+#        These subjects may also NEVER form a double period.
+# C7   General no-double rule — all subjects not in the "allowed doubles"
+#        list may never be placed adjacent to themselves
+# C8   Math rule: quota = 6 periods/week; appears every day (Mon-Fri);
+#        exactly ONE consecutive double period on one day per week
 # C9   IX-X science doubles: Physics/Chemistry/Biology/Comp-IX-X each
-#        get exactly one double per week in IX-X sections
+#        get exactly one consecutive double per week in IX-X sections;
+#        the double must NOT cross the lunch break
 # C10  Games: never placed in the last teaching period of any day
-# C11  Fully-filled timetable: emergency back-fill ensures no empty slots
+# C11  Class teacher first-period rule: class teacher teaches P1 in their
+#        own class in at least 90% of school days (≥ 4/5 days)
+# C12  Fully-filled timetable: emergency back-fill + displacement ensures
+#        no class has an empty teaching period
 # ───────────────────────────────────────────────────────────
 
 # ── Subject-category helpers ──────────────────────────────
 
-DAILY_SINGLE_SUBJECTS  = ["ENGLISH", "URDU", "GENERAL SCIENCE"]
+# Subjects that must appear AT MOST ONCE per day per class.
+# Exact-keyword match: a subject qualifies if any keyword below appears
+# as a whole word (or phrase) inside the normalised subject name.
+# Covers: Sindhi, Islamiat, English, Urdu, General Science, Arabic,
+#         Geography, History, Social Studies
+DAILY_SINGLE_KEYWORDS = [
+    "SINDHI", "ISLAMIAT", "ENGLISH", "URDU",
+    "GENERAL SCIENCE", "ARABIC", "GEOGRAPHY",
+    "HISTORY", "SOCIAL STUDIES",
+]
+
 IX_X_DOUBLE_SUBJECTS   = [
     "PHYSICS", "CHEMISTRY", "BIOLOGY",
     "COMPUTER IX-X", "COMPUTER SCIENCE IX-X",
@@ -567,8 +586,17 @@ GAMES_KEYWORD = "GAMES"
 
 
 def is_daily_single(subject):
-    s = subject.upper()
-    return any(k in s for k in DAILY_SINGLE_SUBJECTS)
+    """
+    True when the subject must appear at most once per day.
+    Uses longest-match-first so "GENERAL SCIENCE" is matched before
+    "GENERAL" could hypothetically match something else.
+    """
+    s = subject.strip().upper()
+    # Sort by length descending so multi-word keywords match first
+    for kw in sorted(DAILY_SINGLE_KEYWORDS, key=len, reverse=True):
+        if kw in s:
+            return True
+    return False
 
 
 def is_math(subject):
@@ -987,11 +1015,9 @@ def assign_class_teacher_priority():
                 continue
 
             for subject in subjects:
-                required      = st.session_state.subject_config.get(section, {}).get(subject, 0)
-                current_count = subject_count_total(section, subject)
-
-                if current_count >= required:
-                    continue
+                # Use quota_remaining (O(1), always in sync with apply_assignment)
+                if quota_remaining(section, subject) <= 0:
+                    continue   # this subject is already fully placed for the week
 
                 if (
                     st.session_state.timetable[section][day]["P1"]["subject"] == ""
@@ -1009,8 +1035,12 @@ def assign_class_teacher_priority():
 
 def assign_daily_singles():
     """
-    C6 – English, Urdu, General Science must appear exactly once every day
-    as a single period.  Placed early so later phases cannot steal the slot.
+    C6 – Daily-single subjects must appear at most once per day per class
+    and may never form a double period.  Subjects in this category:
+      Sindhi, Islamiat, English, Urdu, General Science, Arabic,
+      Geography, History, Social Studies
+    Placed in Phase 2 (before general fill) so later phases cannot
+    accidentally double these subjects.
     """
     for section in st.session_state.subject_config:
         for subject in list(st.session_state.subject_config[section].keys()):
@@ -1109,8 +1139,12 @@ def assign_ix_x_doubles():
     consecutive double period per week for IX-X sections.
     """
     for section in st.session_state.subject_config:
-        sec_upper = section.upper()
-        is_ix_x   = any(k in sec_upper for k in ["IX", " 9", "10", "X "])
+        # Robust detection: match Grade/Class IX, X, 9, or 10.
+        # Uses word-boundary regex to avoid false positives like "MIX" or "EXTRA".
+        is_ix_x = bool(re.search(
+            r'(?<![A-Z])(?:IX|X|9|10)(?![A-Z0-9])',
+            section.upper()
+        ))
 
         if not is_ix_x:
             continue
