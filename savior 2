@@ -26,7 +26,6 @@ import os
 # ==================================================
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-
 MON_WED_TIMES = {
     "P1": "8:00-8:50",
     "P2": "8:50-9:30",
@@ -38,6 +37,7 @@ MON_WED_TIMES = {
     "P7": "12:40-1:20",
     "P8": "1:20-2:00",
 }
+
 THURSDAY_TIMES = {
     "P1": "8:50-9:30",
     "P2": "9:30-10:05",
@@ -49,6 +49,7 @@ THURSDAY_TIMES = {
     "P7": "12:45-1:15",
     "P8": "1:15-2:00",
 }
+
 FRIDAY_TIMES = {
     "P1": "8:00-8:40",
     "P2": "8:40-9:15",
@@ -110,7 +111,18 @@ def get_periods(day):
         return ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6"]
     return ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6", "P7", "P8"]
 
+def get_time(day, period):
 
+    if day in ["Monday", "Tuesday", "Wednesday"]:
+        return MON_WED_TIMES.get(period, "")
+
+    elif day == "Thursday":
+        return THURSDAY_TIMES.get(period, "")
+
+    elif day == "Friday":
+        return FRIDAY_TIMES.get(period, "")
+
+    return ""
 # ==================================================
 # ---------------- SESSION STATE -------------------
 # ==================================================
@@ -1579,7 +1591,7 @@ def export_teacher_view_word(teacher):
 
     for r, period in enumerate(ALL_PERIODS):
         table.cell(r + 1, 0).text = period
-        table.cell(r + 1, 1).text = MON_THU_TIMES.get(period, "")
+        table.cell(r + 1, 1).text = get_time(day, period)
 
         col_index = 2
         for day in DAYS:
@@ -1633,7 +1645,7 @@ def export_teacher_view_pdf(teacher):
     data = [["Period", "Mon-Thu Time", "Mon", "Tue", "Wed", "Thu", "Fri", "Fri Time"]]
 
     for period in ALL_PERIODS:
-        row = [period, MON_THU_TIMES.get(period, "")]
+        row = [period, get_time(day, period)]
 
         for day in DAYS:
             actual_period = period
@@ -1697,7 +1709,7 @@ def export_class_timetable_pdf(section):
     data = [["Period", "Mon-Thu Time"] + DAYS + ["Fri Time"]]
 
     for period in ALL_PERIODS:
-        row = [period, MON_THU_TIMES.get(period, "")]
+        row = [period, get_time(day, period)]
 
         for day in DAYS:
             if period in get_periods(day):
@@ -1761,7 +1773,7 @@ def export_class_timetable_to_word(section):
 
     for r, period in enumerate(ALL_PERIODS):
         table.cell(r + 1, 0).text = period
-        table.cell(r + 1, 1).text = MON_THU_TIMES.get(period, "")
+        table.cell(r + 1, 1).text = get_time(day, period)
 
         col_index = 2
         for day in DAYS:
@@ -1855,7 +1867,7 @@ def build_principal_matrix():
                 "Day": day,
                 "P. No.": "" if period == "Lunch" else period_no,
                 "Bell Timing": (
-                    MON_THU_TIMES.get(period, "") if day != "Friday"
+                    get_time(day, period) if day != "Friday"
                     else FRIDAY_TIMES.get(period, "")
                 ),
             }
@@ -2316,24 +2328,32 @@ if menu == "Class View":
         </style>
         """, unsafe_allow_html=True)
 
-        # ALL_PERIODS = P1 P2 P3 P4 Lunch P5 P6 P7 P8 (Lunch after 4th)
-        display_periods = ALL_PERIODS  # ["P1","P2","P3","P4","Lunch","P5","P6","P7","P8"]
-        df = pd.DataFrame(df_data, index=display_periods)
-        df.insert(0, "Mon-Thu Time", [MON_THU_TIMES.get(p, "") for p in display_periods])
+        # Build the display DataFrame in one shot — never use df.insert()
+        # which throws ValueError when a column already exists or the
+        # list length doesn't match the index length.
+        display_periods = ALL_PERIODS  # P1 P2 P3 P4 Lunch P5 P6 P7 P8
 
-        # Friday times aligned to ALL_PERIODS order: P1 P2 P3 P4 Lunch P5 P6 -- --
-        fri_times = [
-            "8:00-8:40",          # P1
-            "8:40-9:15",          # P2
-            "9:15-9:50",          # P3
-            "9:50-10:25",         # P4
-            "Lunch 10:25-10:55",  # Lunch
-            "10:55-11:35",        # P5
-            "11:35-12:15",        # P6
-            "",                   # P7 (no Friday P7)
-            "",                   # P8 (no Friday P8)
-        ]
-        df.insert(6, "Fri Time", fri_times)
+        # Friday times list must be exactly len(ALL_PERIODS) = 9 items
+        fri_times_map = {
+            "P1":    "8:00-8:40",
+            "P2":    "8:40-9:15",
+            "P3":    "9:15-9:50",
+            "P4":    "9:50-10:25",
+            "Lunch": "10:25-10:55",
+            "P5":    "10:55-11:35",
+            "P6":    "11:35-12:15",
+            # P7 and P8 do not exist on Friday
+        }
+
+        df = pd.DataFrame(
+            {
+                "Period":        display_periods,
+                "Mon-Wed Time": [MON_WED_TIMES.get(p, "") for p in display_periods],
+                "Thursday Time": [THURSDAY_TIMES.get(p, "") for p in display_periods],
+                **{day: df_data[day] for day in DAYS},
+                "Fri Time":      [fri_times_map.get(p, "")   for p in display_periods],
+            }
+        ).set_index("Period")
 
         edited_df = st.data_editor(
             df,
@@ -2449,9 +2469,16 @@ if menu == "Teacher View":
 
             df_data[day] = row
 
-        df = pd.DataFrame(df_data, index=ALL_PERIODS)
-        df.insert(0, "Mon-Thu Time", [MON_THU_TIMES.get(p, "") for p in ALL_PERIODS])
-        df.insert(len(DAYS) + 1, "Fri Time", [FRIDAY_TIMES.get(p, "") for p in ALL_PERIODS])
+        # Build in one shot — avoids ValueError from df.insert() on reruns
+        df = pd.DataFrame(
+            {
+                "Period":        ALL_PERIODS,
+                "Mon-Wed Time": [MON_WED_TIMES.get(p, "") for p in ALL_PERIODS],
+                "Thursday Time": [THURSDAY_TIMES.get(p, "") for p in ALL_PERIODS],
+                **{day: df_data[day] for day in DAYS},
+                "Fri Time":      [FRIDAY_TIMES.get(p, "")    for p in ALL_PERIODS],
+            }
+        ).set_index("Period")
         st.dataframe(df)
 
         total = count_teacher_periods(teacher)

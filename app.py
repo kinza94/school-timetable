@@ -2358,9 +2358,9 @@ if menu == "Class View":
         edited_df = st.data_editor(
             df,
             use_container_width=True,
-            disabled=not is_admin
+            disabled=not is_admin,
+            key="class_editor"
         )
-
         col1, col2 = st.columns(2)
 
         with col1:
@@ -2386,29 +2386,31 @@ if menu == "Class View":
                     )
 
         if is_admin and st.button("Save Manual Changes"):
+
             for day in DAYS:
                 for period in ALL_PERIODS:
                     if period in get_periods(day):
+
                         cell = edited_df.loc[period, day]
 
                         if cell:
-                            try:
-                                parts = cell.split("\n")
-                                subject = parts[0].strip()
-                                teacher = ""
-                                if len(parts) > 1:
-                                    teacher = parts[1].replace("(", "").replace(")", "").strip().upper()
+                            parts = cell.split("\n")
+                            subject = parts[0].strip()
+                            teacher = ""
 
-                                st.session_state.timetable[sec][day][period]["subject"] = subject
-                                st.session_state.timetable[sec][day][period]["teacher"] = teacher
-                            except Exception as e:
-                                st.warning(f"Format error in {day}-{period}: {e}")
+                            if len(parts) > 1:
+                                teacher = parts[1].replace("(", "").replace(")", "").strip().upper()
+
+                            st.session_state.timetable[sec][day][period]["subject"] = subject
+                            st.session_state.timetable[sec][day][period]["teacher"] = teacher
+
                         else:
                             st.session_state.timetable[sec][day][period]["subject"] = ""
                             st.session_state.timetable[sec][day][period]["teacher"] = ""
 
             save_all_data()
-            st.success("Manual changes saved")
+
+            st.session_state["refresh_teacher_view"] = True
             st.rerun()
 
         # Validations after class view
@@ -2468,6 +2470,8 @@ if menu == "Teacher View":
                     row.append("")
 
             df_data[day] = row
+        if "refresh_teacher_view" in st.session_state:
+            st.session_state.pop("refresh_teacher_view")
 
         # Build in one shot — avoids ValueError from df.insert() on reruns
         df = pd.DataFrame(
