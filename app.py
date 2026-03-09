@@ -27,15 +27,15 @@ import os
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
 MON_THU_TIMES = {
-    "P1": "8:00-8:50",
-    "P2": "8:50-9:30",
-    "P3": "9:30-10:10",
-    "P4": "10:10-10:50",
-    "P5": "10:50-11:30",
-    "Lunch": "11:30-12:00",
-    "P6": "12:00-12:40",
-    "P7": "12:40-1:20",
-    "P8": "1:20-2:00",
+    "P1": "8:00-8:45",
+    "P2": "8:45-9:30",
+    "P3": "9:30-10:15",
+    "P4": "10:15-11:00",
+    "Lunch": "11:00-11:30",
+    "P5": "11:30-12:15",
+    "P6": "12:15-1:00",
+    "P7": "1:00-1:45",
+    "P8": "1:45-2:30",
 }
 
 FRIDAY_TIMES = {
@@ -48,7 +48,7 @@ FRIDAY_TIMES = {
     "P6": "11:35-12:15",
 }
 
-ALL_PERIODS = ["P1", "P2", "P3", "P4", "P5", "Lunch", "P6", "P7", "P8"]
+ALL_PERIODS = ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6", "P7", "P8"]
 
 # ✅ FIX 2: Credentials moved to constants (replace with env vars in production)
 ADMIN_USERNAME = "admin"
@@ -93,9 +93,10 @@ def clean(x):
 
 
 def get_periods(day):
+    # Lunch is always after the 4th period on every day
     if day == "Friday":
         return ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6"]
-    return ["P1", "P2", "P3", "P4", "P5", "Lunch", "P6", "P7", "P8"]
+    return ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6", "P7", "P8"]
 
 
 # ==================================================
@@ -1259,18 +1260,18 @@ def export_teacher_view_word(teacher):
         for day in DAYS:
             actual_period = period
 
-            if day == "Friday":
-                if period == "P5":
-                    table.cell(r + 1, col_index).text = "Lunch"
-                    col_index += 1
-                    continue
-                elif period == "Lunch":
-                    actual_period = "P5"
+            # Friday period list = P1 P2 P3 P4 Lunch P5 P6
+            # ALL_PERIODS     = P1 P2 P3 P4 Lunch P5 P6 P7 P8
+            # P7, P8 don't exist on Friday → leave blank
+            if day == "Friday" and period not in get_periods(day):
+                table.cell(r + 1, col_index).text = ""
+                col_index += 1
+                continue
 
             value = ""
-            if actual_period in get_periods(day):
+            if period in get_periods(day):
                 for sec in st.session_state.timetable:
-                    entry = st.session_state.timetable[sec][day][actual_period]
+                    entry = st.session_state.timetable[sec][day][period]
                     if clean(entry["teacher"]) == clean(teacher):
                         value = f"{sec}\n{entry['subject']}"
                         break
@@ -1312,17 +1313,15 @@ def export_teacher_view_pdf(teacher):
         for day in DAYS:
             actual_period = period
 
-            if day == "Friday":
-                if period == "P5":
-                    row.append("Lunch")
-                    continue
-                elif period == "Lunch":
-                    actual_period = "P5"
+            # Friday: P7/P8 don't exist — blank cell
+            if day == "Friday" and period not in get_periods(day):
+                row.append("")
+                continue
 
             value = ""
-            if actual_period in get_periods(day):
+            if period in get_periods(day):
                 for sec in st.session_state.timetable:
-                    entry = st.session_state.timetable[sec][day][actual_period]
+                    entry = st.session_state.timetable[sec][day][period]
                     if clean(entry["teacher"]) == clean(teacher):
                         value = f"{sec}\n{entry['subject']}"
                         break
@@ -1379,14 +1378,12 @@ def export_class_timetable_pdf(section):
             if period in get_periods(day):
                 actual_period = period
 
-                if day == "Friday":
-                    if period == "P5":
-                        row.append("Lunch")
-                        continue
-                    elif period == "Lunch":
-                        actual_period = "P5"
+                # Friday: P7/P8 don't exist — blank cell
+                if day == "Friday" and period not in get_periods(day):
+                    row.append("")
+                    continue
 
-                cell = st.session_state.timetable[section][day][actual_period]
+                cell = st.session_state.timetable[section][day][period]
                 text = f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else ""
             else:
                 text = ""
@@ -1446,15 +1443,13 @@ def export_class_timetable_to_word(section):
             if period in get_periods(day):
                 actual_period = period
 
-                if day == "Friday":
-                    if period == "P5":
-                        table.cell(r + 1, col_index).text = "Lunch"
-                        col_index += 1
-                        continue
-                    elif period == "Lunch":
-                        actual_period = "P5"
+                # Friday: P7/P8 don't exist — blank cell
+                if day == "Friday" and period not in get_periods(day):
+                    table.cell(r + 1, col_index).text = ""
+                    col_index += 1
+                    continue
 
-                cell = st.session_state.timetable[section][day][actual_period]
+                cell = st.session_state.timetable[section][day][period]
                 text = f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else ""
             else:
                 text = ""
@@ -1994,18 +1989,22 @@ if menu == "Class View":
         </style>
         """, unsafe_allow_html=True)
 
-        display_periods = ["P1", "P2", "P3", "P4", "P5", "Lunch", "P6", "P7", "P8"]
+        # ALL_PERIODS = P1 P2 P3 P4 Lunch P5 P6 P7 P8 (Lunch after 4th)
+        display_periods = ALL_PERIODS  # ["P1","P2","P3","P4","Lunch","P5","P6","P7","P8"]
         df = pd.DataFrame(df_data, index=display_periods)
         df.insert(0, "Mon-Thu Time", [MON_THU_TIMES.get(p, "") for p in display_periods])
 
-        # Friday adjustments
-        p5 = df.loc["P5", "Friday"]
-        df.loc["P5", "Friday"] = "Lunch"
-        df.loc["Lunch", "Friday"] = p5
-
+        # Friday times aligned to ALL_PERIODS order: P1 P2 P3 P4 Lunch P5 P6 -- --
         fri_times = [
-            "8:00-8:40", "8:40-9:15", "9:15-9:50", "9:50-10:25",
-            "Lunch\n10:25-10:55", "10:55-11:35", "11:35-12:15", "", ""
+            "8:00-8:40",          # P1
+            "8:40-9:15",          # P2
+            "9:15-9:50",          # P3
+            "9:50-10:25",         # P4
+            "Lunch 10:25-10:55",  # Lunch
+            "10:55-11:35",        # P5
+            "11:35-12:15",        # P6
+            "",                   # P7 (no Friday P7)
+            "",                   # P8 (no Friday P8)
         ]
         df.insert(6, "Fri Time", fri_times)
 
@@ -2101,25 +2100,24 @@ if menu == "Teacher View":
 
             for p in ALL_PERIODS:
                 found = False
-                actual_p = p
 
-                if day == "Friday":
-                    if p == "P5":
-                        row.append("Lunch")
-                        continue
-                    elif p == "Lunch":
-                        actual_p = "P5"
+                # Lunch row: show "Lunch" label for all days
+                if p == "Lunch":
+                    row.append("Lunch")
+                    continue
 
-                if actual_p in get_periods(day):
-                    for sec in st.session_state.timetable:
-                        entry = st.session_state.timetable[sec][day][actual_p]
-                        if clean(entry["teacher"]) == clean(teacher):
-                            row.append(f"{sec}\n{entry['subject']}")
-                            found = True
-                            break
-                    if not found:
-                        row.append("")
-                else:
+                # P7/P8 don't exist on Friday
+                if p not in get_periods(day):
+                    row.append("")
+                    continue
+
+                for sec in st.session_state.timetable:
+                    entry = st.session_state.timetable[sec][day][p]
+                    if clean(entry["teacher"]) == clean(teacher):
+                        row.append(f"{sec}\n{entry['subject']}")
+                        found = True
+                        break
+                if not found:
                     row.append("")
 
             df_data[day] = row
