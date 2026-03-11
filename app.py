@@ -385,6 +385,12 @@ def is_core(subject):
     return any(c in subject.upper() for c in CORE_SUBJECTS)
 
 def can_assign(section, subject, teacher, day, period):
+    # RULE: subject cannot repeat in same day
+    if subject_count_in_day(section, subject, day) >= 1:
+
+        # allowed exceptions (double subjects)
+        if not (is_math(subject) or is_ix_x_double(subject)):
+            return False
     # Core subjects must appear only once per day
     if subject.upper() in ["ENGLISH", "URDU", "GENERAL SCIENCE"]:
         if subject_count_in_day(section, subject, day) >= 1:
@@ -440,9 +446,14 @@ def can_assign(section, subject, teacher, day, period):
             if ex is not None and ex != day:
                 return False
 
-    if is_ix_x_double(subject):                          # C9
-        if (prev_s.upper()==su or next_s.upper()==su) and \
-                double_used.get((section,subject), False):
+    if is_ix_x_double(subject):
+
+        # already double used in week
+        if double_used.get((section, subject), False):
+            return False
+
+        # must be consecutive
+        if not (prev_s.upper() == su or next_s.upper() == su):
             return False
 
     # C10: Games & Library never in first or last teaching period
