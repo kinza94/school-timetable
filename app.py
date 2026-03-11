@@ -920,7 +920,10 @@ def export_excel(df):
             for cell in row:
                 cell.border=border
                 cell.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
-                cell.fill = lf if is_lunch else (alt if r%2==0 else cell.fill)
+                if is_lunch:
+                    cell.fill = lf
+                elif r % 2 == 0:
+                    cell.fill = alt
         for col in ws.columns:
             ml=max((len(str(c.value or "")) for c in col),default=0)
             ws.column_dimensions[get_column_letter(col[0].column)].width=min(ml+4,30)
