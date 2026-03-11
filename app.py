@@ -426,11 +426,12 @@ def can_assign(section, subject, teacher, day, period):
 
     if is_math(subject):  # C8
 
-        # HARD LIMIT: max 2 maths per day
+        # rule 1: max 2 maths per day
         if subject_count_in_day(section, subject, day) >= 2:
             return False
 
-        if is_math(prev_s) or is_math(next_s):
+        # rule 2: only ONE double day in whole week
+        if subject_count_in_day(section, subject, day) == 1:
             ex = math_double_day(section)
             if ex is not None and ex != day:
                 return False
@@ -544,7 +545,9 @@ def assign_daily_singles():
             if not is_daily_single(subj): continue
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-            for day in DAYS:
+            days = DAYS.copy()
+            random.shuffle(days)
+            for day in days:
                 if quota_remaining(sec,subj)<=0: break
                 if subject_count_in_day(sec,subj,day)>=1: continue
                 cands = [p for p in get_periods(day) if p!="Lunch"]
