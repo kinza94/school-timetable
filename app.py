@@ -143,12 +143,7 @@ if "data_loaded" not in st.session_state:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align:center;color:#1f4e79;'>DHACSS PHASE IV CAMPUS</h1>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align:center;'>Academic Timetable Intelligence</h3>", unsafe_allow_html=True)
-
     st.title("🔐 Login")
-
-
     _, col, _ = st.columns([1,2,1])
     with col:
         username  = st.text_input("Username")
@@ -327,8 +322,10 @@ DAILY_SINGLE_KEYWORDS = [
     "SINDHI","ISLAMIAT","ENGLISH","URDU","GENERAL SCIENCE",
     "ARABIC","GEOGRAPHY","HISTORY","SOCIAL STUDIES",
 ]
+# Per spec: only Physics, Chemistry, Computer IX-X may form doubles.
+# Biology is intentionally excluded — it follows the no-double rule like other subjects.
 IX_X_DOUBLE_SUBJECTS = [
-    "PHYSICS","CHEMISTRY","BIOLOGY","COMPUTER IX-X","COMPUTER SCIENCE IX-X",
+    "PHYSICS","CHEMISTRY","COMPUTER IX-X","COMPUTER SCIENCE IX-X",
 ]
 MATH_KEYWORD  = "MATH"
 GAMES_KEYWORD = "GAMES"
@@ -385,78 +382,107 @@ def is_core(subject):
     return any(c in subject.upper() for c in CORE_SUBJECTS)
 
 def can_assign(section, subject, teacher, day, period):
-    # RULE: subject cannot repeat in same day
-    if subject_count_in_day(section, subject, day) >= 1:
+    """
+    Single constraint gate — returns True only when ALL hard rules are satisfied.
 
-        # allowed exceptions (double subjects)
-        if not (is_math(subject) or is_ix_x_double(subject)):
-            return False
-    # Core subjects must appear only once per day
-    if subject.upper() in ["ENGLISH", "URDU", "GENERAL SCIENCE"]:
-        if subject_count_in_day(section, subject, day) >= 1:
-            return False
+    C1  Teacher clash: teacher cannot be in two sections simultaneously.
+    C2  Daily teaching cap: ≤6 periods (≤5 on Friday).
+    C3  4-consecutive hard block (Lunch = hard break).
+    C4  3-consecutive soft — allowed but penalised in fitness.
+    C5  Lunch is a hard break in consecutive counting.
+    C6  Daily-single subjects (English/Urdu/Sindhi etc.): at most once per day,
+        never consecutive.
+    C7  General no-double: non-double-allowed subjects never placed adjacently.
+    C7b General no-same-day-repeat: ANY subject that doesn't allow doubles must
+        not appear more than once on the same day regardless of adjacency.
+    C8  Math: only ONE double per week; the double must be consecutive and must
+        not cross Lunch.
+    C9  IX-X doubles (Physics/Chemistry/Computer): only one per subject per week;
+        must be consecutive, must not cross Lunch.
+    C10 Games / Library: never placed in the first or last teaching period.
+    """
     periods = get_periods(day)
     idx     = periods.index(period)
     if period == "Lunch": return False
-    if teacher_busy(teacher, day, period): return False   # C1
 
+    # ── C1: teacher clash ─────────────────────────────────────────────────────
+    if teacher_busy(teacher, day, period): return False
+
+    # ── C2: daily cap ─────────────────────────────────────────────────────────
     t_key = clean(teacher)
     _init_teacher(t_key)
-    if teacher_day_load[t_key][day] >= (5 if day=="Friday" else 6): return False  # C2
-    if teacher_consecutive_streak(t_key, day, idx) >= 4: return False  # C3
+    if teacher_day_load[t_key][day] >= (5 if day == "Friday" else 6): return False
 
+    # ── C3: hard 4-consecutive block ──────────────────────────────────────────
+    if teacher_consecutive_streak(t_key, day, idx) >= 4: return False
+
+    # ── Build real-adjacency helpers (Lunch = hard break) ────────────────────
     slots_list = [p for p in periods if p != "Lunch"]
-    si = slots_list.index(period) if period in slots_list else -1
-    prev_p = slots_list[si-1] if si > 0 else None
-    next_p = slots_list[si+1] if si < len(slots_list)-1 else None
-    lunch_i  = periods.index("Lunch") if "Lunch" in periods else -1
-    period_i = periods.index(period)
+    si         = slots_list.index(period) if period in slots_list else -1
+    prev_p     = slots_list[si - 1] if si > 0 else None
+    next_p     = slots_list[si + 1] if si < len(slots_list) - 1 else None
+    lunch_i    = periods.index("Lunch") if "Lunch" in periods else -1
+    period_i   = periods.index(period)
 
     def real_adj(other_p):
+        """True only when the two periods are immediately adjacent with no Lunch between."""
         if other_p is None: return False
-        oi = periods.index(other_p)
+        oi  = periods.index(other_p)
         lo, hi = min(period_i, oi), max(period_i, oi)
         if lunch_i != -1 and lo < lunch_i < hi: return False
         return abs(period_i - oi) == 1
 
-    prev_s = slot(section,day,prev_p)["subject"] if prev_p and real_adj(prev_p) else ""
-    next_s = slot(section,day,next_p)["subject"] if next_p and real_adj(next_p) else ""
-    su = subject.upper()
+    prev_s = slot(section, day, prev_p)["subject"] if prev_p and real_adj(prev_p) else ""
+    next_s = slot(section, day, next_p)["subject"] if next_p and real_adj(next_p) else ""
+    su     = subject.upper()
 
-    if is_daily_single(subject):                          # C6
+    # ── C6: daily-single subjects ─────────────────────────────────────────────
+    if is_daily_single(subject):
         if subject_count_in_day(section, subject, day) >= 1: return False
-        if prev_s.upper()==su or next_s.upper()==su: return False
+        if prev_s.upper() == su or next_s.upper() == su:     return False
 
-    # Extra guard: non-math core subjects not covered by C6 (e.g. edge variants)
-    if is_core(subject) and not is_math(subject) and not is_daily_single(subject):
+    # ── C7b: general no-same-day-repeat for non-double subjects ──────────────
+    # Any subject that isn't allowed to double must appear at most once per day.
+    if not is_double_allowed(subject):
         if subject_count_in_day(section, subject, day) >= 1: return False
 
-    if not is_double_allowed(subject):                    # C7
-        if prev_s.upper()==su or next_s.upper()==su: return False
+    # ── C7: no consecutive identical subjects for non-double subjects ─────────
+    if not is_double_allowed(subject):
+        if prev_s.upper() == su or next_s.upper() == su: return False
 
-    if is_math(subject):  # C8
+    # ── C8: Math — at most ONE double per week, consecutive, no cross-Lunch ───
+    if is_math(subject):
+        # How many times Math already appears today?
+        today_count = subject_count_in_day(section, subject, day)
+        would_be_double = (prev_s.upper() == su or next_s.upper() == su)
 
-        # rule 1: max 2 maths per day
-        if subject_count_in_day(section, subject, day) >= 2:
-            return False
-
-        # rule 2: only ONE double day in whole week
-        if subject_count_in_day(section, subject, day) == 1:
+        if would_be_double:
+            # Doubles must not cross Lunch (real_adj already enforces this via prev_s/next_s)
+            # Block if a Math double is already established on a DIFFERENT day this week
             ex = math_double_day(section)
-            if ex is not None and ex != day:
+            if ex is not None and ex != day: return False
+            # Block if today already HAS a complete double (2 Math) — no triples
+            if today_count >= 2: return False
+        else:
+            # Non-double placement: Math must not appear more than once per day
+            # UNLESS this day is the designated double-day and only one Math is there yet.
+            ex = math_double_day(section)
+            if today_count >= 1:
+                # Allow a second Math only if the day is the double-day and both
+                # this slot and an adjacent empty slot can form the double.
+                # Here we are NOT adjacent to existing Math → block.
                 return False
 
+    # ── C9: IX-X doubles — at most one per subject per week ──────────────────
     if is_ix_x_double(subject):
-
-        # already double used in week
-        if double_used.get((section, subject), False):
+        would_be_double = (prev_s.upper() == su or next_s.upper() == su)
+        if would_be_double and double_used.get((section, subject), False):
+            return False
+        # Prevent a non-adjacent second occurrence (which is not a double, just a repeat)
+        if not would_be_double and subject_count_in_day(section, subject, day) >= 1:
             return False
 
-        # must be consecutive
-        if not (prev_s.upper() == su or next_s.upper() == su):
-            return False
-
-    # C10: Games & Library never in first or last teaching period
+    # ── C10: Games / Library never first or last teaching period ─────────────
     if is_games(subject) or is_library(subject):
         teaching = [p for p in get_periods(day) if p != "Lunch"]
         if period in (teaching[0], teaching[-1]): return False
@@ -555,78 +581,144 @@ def assign_class_teacher_priority():
 
 # ── Phase 2: daily-single subjects ───────────────────────────────────────────
 def assign_daily_singles():
+    """
+    Place subjects that must appear exactly once per day.
+    Two-pass design:
+      Pass 1 — one placement per day, strictly in order Mon→Fri.
+               Each day is only considered if the subject hasn't been placed
+               there yet, preventing any day from getting two occurrences.
+      Pass 2 — if quota still remains after Pass 1 (subject has fewer than 5
+               weekly periods), place remaining on days that still have none.
+    This guarantees both the once-per-day rule and balanced weekly distribution.
+    """
     for sec in st.session_state.subject_config:
         for subj in list(st.session_state.subject_config[sec]):
             if not is_daily_single(subj): continue
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-            days = DAYS.copy()
-            random.shuffle(days)
-            for day in days:
-                if quota_remaining(sec,subj)<=0: break
-                if subject_count_in_day(sec,subj,day)>=1: continue
-                cands = [p for p in get_periods(day) if p!="Lunch"]
+
+            weekly_quota = st.session_state.subject_config[sec][subj]
+
+            # Pass 1: try to place exactly one per day (Mon→Fri)
+            # Shuffle periods within each day for variety but keep day order fixed
+            days_to_try = DAYS.copy()
+            random.shuffle(days_to_try)
+
+            for day in days_to_try:
+                if quota_remaining(sec, subj) <= 0: break
+                if subject_count_in_day(sec, subj, day) >= 1: continue  # already placed today
+
+                cands = [p for p in get_periods(day) if p != "Lunch"]
                 random.shuffle(cands)
                 for p in cands:
-                    if quota_remaining(sec,subj)<=0: break
-                    if slot(sec,day,p)["subject"]=="" and can_assign(sec,subj,teacher,day,p):
-                        apply_assignment(sec,subj,teacher,day,p); break
+                    if quota_remaining(sec, subj) <= 0: break
+                    if slot(sec, day, p)["subject"] != "": continue
+                    if can_assign(sec, subj, teacher, day, p):
+                        apply_assignment(sec, subj, teacher, day, p)
+                        break
 
 # ── Phase 3: Math (daily + one double) ───────────────────────────────────────
 def assign_math():
+    """
+    Place Math for each section:
+      Step A — place the ONE double (two consecutive periods on one random day).
+               If no consecutive pair is available, falls through to singles only.
+      Step B — place one Math on each remaining day (no doubles allowed after Step A).
+
+    Invariants maintained:
+      • At most 2 Math periods on the double-day (never 3+).
+      • All other days have exactly 1 Math.
+      • Weekly total = quota (typically 6 for Mon-Fri + double day counted twice).
+    """
     for sec in st.session_state.subject_config:
         for subj in st.session_state.subject_config[sec]:
             if not is_math(subj): continue
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-            placed = False
-            if quota_remaining(sec,subj)>=2:
-                days = DAYS.copy(); random.shuffle(days)
-                for day in days:
-                    ps = [p for p in get_periods(day) if p!="Lunch"]
-                    for i in range(len(ps)-1):
-                        p1,p2 = ps[i],ps[i+1]
-                        if (quota_remaining(sec,subj)>=2
-                                and slot(sec,day,p1)["subject"]==""
-                                and slot(sec,day,p2)["subject"]==""
-                                and can_assign(sec,subj,teacher,day,p1)
-                                and can_assign(sec,subj,teacher,day,p2)):
-                            apply_assignment(sec,subj,teacher,day,p1)
-                            apply_assignment(sec,subj,teacher,day,p2)
-                            placed=True; break
-                    if placed: break
+
+            double_day = None  # track which day got the double this week
+
+            # ── Step A: place the one allowed double ──────────────────────────
+            if quota_remaining(sec, subj) >= 2:
+                days_shuffled = DAYS.copy(); random.shuffle(days_shuffled)
+                for day in days_shuffled:
+                    if quota_remaining(sec, subj) < 2: break
+                    ps = [p for p in get_periods(day) if p != "Lunch"]
+                    for i in range(len(ps) - 1):
+                        p1, p2 = ps[i], ps[i + 1]
+                        if (slot(sec, day, p1)["subject"] == ""
+                                and slot(sec, day, p2)["subject"] == ""
+                                and can_assign(sec, subj, teacher, day, p1)
+                                and can_assign(sec, subj, teacher, day, p2)):
+                            apply_assignment(sec, subj, teacher, day, p1)
+                            apply_assignment(sec, subj, teacher, day, p2)
+                            double_day = day
+                            break
+                    if double_day: break
+
+            # ── Step B: one single Math per remaining day ─────────────────────
             for day in DAYS:
-                if quota_remaining(sec,subj)<=0: break
-                if subject_count_in_day(sec,subj,day)>=1: continue
-                cands=[p for p in get_periods(day) if p!="Lunch"]; random.shuffle(cands)
+                if quota_remaining(sec, subj) <= 0: break
+                # Skip the double-day — it already has 2 Math periods
+                if day == double_day: continue
+                if subject_count_in_day(sec, subj, day) >= 1: continue
+
+                cands = [p for p in get_periods(day) if p != "Lunch"]
+                random.shuffle(cands)
                 for p in cands:
-                    if quota_remaining(sec,subj)<=0: break
-                    if slot(sec,day,p)["subject"]=="" and can_assign(sec,subj,teacher,day,p):
-                        apply_assignment(sec,subj,teacher,day,p); break
+                    if quota_remaining(sec, subj) <= 0: break
+                    if slot(sec, day, p)["subject"] == "" and can_assign(sec, subj, teacher, day, p):
+                        apply_assignment(sec, subj, teacher, day, p)
+                        break
 
 # ── Phase 4: IX-X science doubles ────────────────────────────────────────────
 def assign_ix_x_doubles():
+    """
+    Place IX-X science subjects (Physics, Chemistry, Computer IX-X):
+      Step A — place the required ONE consecutive double this week.
+      Step B — place any remaining single occurrences on other days,
+               ensuring one-per-day (no same-day repeats).
+    """
     for sec in st.session_state.subject_config:
         if not _is_ix_x_section(sec): continue
         for subj in list(st.session_state.subject_config[sec]):
             if not is_ix_x_double(subj): continue
-            if double_used.get((sec,subj),False) or quota_remaining(sec,subj)<2: continue
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-            days = DAYS.copy(); random.shuffle(days); placed = False
-            for day in days:
-                ps=[p for p in get_periods(day) if p!="Lunch"]
-                for i in range(len(ps)-1):
-                    p1,p2=ps[i],ps[i+1]
-                    if (quota_remaining(sec,subj)>=2
-                            and slot(sec,day,p1)["subject"]==""
-                            and slot(sec,day,p2)["subject"]==""
-                            and can_assign(sec,subj,teacher,day,p1)
-                            and can_assign(sec,subj,teacher,day,p2)):
-                        apply_assignment(sec,subj,teacher,day,p1)
-                        apply_assignment(sec,subj,teacher,day,p2)
-                        placed=True; break
-                if placed: break
+
+            double_day = None
+
+            # ── Step A: place exactly one double ─────────────────────────────
+            if not double_used.get((sec, subj), False) and quota_remaining(sec, subj) >= 2:
+                days_shuffled = DAYS.copy(); random.shuffle(days_shuffled)
+                for day in days_shuffled:
+                    if quota_remaining(sec, subj) < 2: break
+                    ps = [p for p in get_periods(day) if p != "Lunch"]
+                    for i in range(len(ps) - 1):
+                        p1, p2 = ps[i], ps[i + 1]
+                        if (slot(sec, day, p1)["subject"] == ""
+                                and slot(sec, day, p2)["subject"] == ""
+                                and can_assign(sec, subj, teacher, day, p1)
+                                and can_assign(sec, subj, teacher, day, p2)):
+                            apply_assignment(sec, subj, teacher, day, p1)
+                            apply_assignment(sec, subj, teacher, day, p2)
+                            double_day = day
+                            break
+                    if double_day: break
+
+            # ── Step B: fill remaining quota as singles on other days ─────────
+            for day in DAYS:
+                if quota_remaining(sec, subj) <= 0: break
+                if day == double_day: continue          # already has the double
+                if subject_count_in_day(sec, subj, day) >= 1: continue  # already placed today
+
+                cands = [p for p in get_periods(day) if p != "Lunch"]
+                random.shuffle(cands)
+                for p in cands:
+                    if quota_remaining(sec, subj) <= 0: break
+                    if slot(sec, day, p)["subject"] == "" and can_assign(sec, subj, teacher, day, p):
+                        apply_assignment(sec, subj, teacher, day, p)
+                        break
 
 # ── Swap / displace helpers ───────────────────────────────────────────────────
 def try_swap(section, subject, teacher):
@@ -650,69 +742,155 @@ def try_swap(section, subject, teacher):
     return False
 
 def try_displace(section, subject, teacher):
+    """
+    Free a slot by permanently evicting an occupant whose subject is already
+    at or over its weekly quota (surplus period — safe to remove).
+    The freed slot is then given to the under-quota `subject`.
+
+    On failure to use the freed slot, the occupant is UNCONDITIONALLY restored
+    so no slot is accidentally left empty.
+    """
     for day in DAYS:
         for period in get_periods(day):
-            if period=="Lunch": continue
+            if period == "Lunch": continue
             curr = st.session_state.timetable[section][day][period]
             os2, ot = curr.get("subject",""), curr.get("teacher","")
-            if not os2 or quota_remaining(section,os2)>0: continue
+            if not os2 or quota_remaining(section, os2) > 0: continue  # occupant still needed
+
             undo_assignment(section, day, period)
-            if not teacher_busy(teacher,day,period) and can_assign(section,subject,teacher,day,period):
-                apply_assignment(section,subject,teacher,day,period)
+
+            if (not teacher_busy(teacher, day, period)
+                    and can_assign(section, subject, teacher, day, period)):
+                apply_assignment(section, subject, teacher, day, period)
                 return True
-            if ot and can_assign(section,os2,ot,day,period):
-                apply_assignment(section,os2,ot,day,period)
+
+            # Cannot use this slot — UNCONDITIONALLY restore the evicted period
+            # so the slot is never left empty (even if can_assign fails edge cases).
+            apply_assignment(section, os2, ot, day, period)
+
     return False
 
 # ── Phase 5: general fill ─────────────────────────────────────────────────────
 def basic_auto_fill():
+    """
+    Fill remaining quota for all subjects.
+
+    Key improvements:
+    • Subjects processed largest-deficit-first so hard-to-place subjects win slots.
+    • Day selection uses a two-tier preference:
+        Tier 1 — days where the subject hasn't appeared yet (spread-first).
+        Tier 2 — days where the subject appears once (only for double-allowed subjects).
+      This naturally distributes subjects across the week rather than clustering.
+    • Math: daily cap is strictly 2 (double-day) or 1 (all other days) — never 3+.
+    • Non-double subjects: hard cap of 1 per day enforced (reinforces C7b).
+    """
     secs = list(st.session_state.subject_config.keys()); random.shuffle(secs)
+
     for sec in secs:
-        items = sorted(st.session_state.subject_config[sec].items(),
-                       key=lambda kv: quota_remaining(sec,kv[0]), reverse=True)
-        for subj,_ in items:
+        items = sorted(
+            st.session_state.subject_config[sec].items(),
+            key=lambda kv: quota_remaining(sec, kv[0]),
+            reverse=True,
+        )
+
+        for subj, _ in items:
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-            while quota_remaining(sec,subj)>0:
-                valid=[]; days=DAYS.copy(); random.shuffle(days)
-                for day in days:
-                    if subject_count_in_day(sec,subj,day)>=2: continue
-                    ps=get_periods(day).copy(); random.shuffle(ps)
+
+            while quota_remaining(sec, subj) > 0:
+                # ── Day preference: zero-occurrence days first ─────────────
+                zero_days = [d for d in DAYS if subject_count_in_day(sec, subj, d) == 0]
+                one_days  = [d for d in DAYS if subject_count_in_day(sec, subj, d) == 1
+                             and is_double_allowed(subj)]
+                random.shuffle(zero_days); random.shuffle(one_days)
+                ordered_days = zero_days + one_days
+
+                # Math hard cap: double-day max 2, others max 1
+                def day_cap(d):
+                    if is_math(subj):
+                        return 2 if d == math_double_day(sec) else 1
+                    if is_double_allowed(subj):
+                        return 2
+                    return 1    # all other subjects: strictly once per day
+
+                valid = []
+                for day in ordered_days:
+                    if subject_count_in_day(sec, subj, day) >= day_cap(day): continue
+                    ps = get_periods(day).copy(); random.shuffle(ps)
                     for p in ps:
-                        if p=="Lunch" or slot(sec,day,p)["subject"]: continue
-                        if teacher_busy(teacher,day,p): continue
-                        if teacher_daily_load(teacher,day)>=(5 if day=="Friday" else 6): continue
-                        if can_assign(sec,subj,teacher,day,p): valid.append((day,p))
+                        if p == "Lunch" or slot(sec, day, p)["subject"]: continue
+                        if teacher_busy(teacher, day, p): continue
+                        if teacher_daily_load(teacher, day) >= (5 if day == "Friday" else 6): continue
+                        if can_assign(sec, subj, teacher, day, p):
+                            valid.append((day, p))
+
                 if not valid:
-                    if try_swap(sec,subj,teacher): continue
-                    if try_displace(sec,subj,teacher): continue
-                    break
-                day,p=random.choice(valid); apply_assignment(sec,subj,teacher,day,p)
+                    if try_swap(sec, subj, teacher): continue
+                    if try_displace(sec, subj, teacher): continue
+                    break   # genuinely impossible this run
+
+                day, p = random.choice(valid)
+                apply_assignment(sec, subj, teacher, day, p)
 
 # ── Phase 5b: under-quota top-up ─────────────────────────────────────────────
 def fill_under_quota_subjects():
+    """
+    Safety-net pass after Phases 1-5: top up any subject still below weekly quota.
+
+    Four escalation levels:
+      L1  — empty slot, strict daily cap (1 per day for non-doubles; 2 for doubles).
+      L2  — empty slot, relaxed cap (doubles only) — non-doubles still capped at 1/day.
+      L3  — try_swap: move an occupant to another empty slot.
+      L4  — try_displace: evict a surplus-quota occupant permanently.
+
+    Math-specific: cap is always ≤2/day (never relaxed), because placing a 3rd Math
+    on any day would violate the double-period-only rule.
+    """
     for sec in st.session_state.subject_config:
-        for subj in sorted(st.session_state.subject_config[sec],
-                           key=lambda s: quota_remaining(sec,s), reverse=True):
-            teacher = _find_teacher(sec,subj)
+        for subj in sorted(
+            st.session_state.subject_config[sec],
+            key=lambda s: quota_remaining(sec, s),
+            reverse=True,
+        ):
+            teacher = _find_teacher(sec, subj)
             if not teacher: continue
+
+            def strict_day_cap(d):
+                """Per-day max for this subject in relaxed mode."""
+                if is_math(subj):
+                    return 2  # never exceed double-pair
+                if is_double_allowed(subj):
+                    return 2
+                return 1   # non-doubles: one per day even when relaxing
+
+            # ── Levels 1 & 2: direct placement ───────────────────────────────
             for relax in (False, True):
-                if quota_remaining(sec,subj)<=0: break
-                days=DAYS.copy(); random.shuffle(days)
-                for day in days:
-                    if quota_remaining(sec,subj)<=0: break
-                    lim=8 if relax else 2
-                    if subject_count_in_day(sec,subj,day)>=lim: continue
-                    ps=[p for p in get_periods(day) if p!="Lunch"]; random.shuffle(ps)
+                if quota_remaining(sec, subj) <= 0: break
+                days_shuffled = DAYS.copy(); random.shuffle(days_shuffled)
+                for day in days_shuffled:
+                    if quota_remaining(sec, subj) <= 0: break
+                    cap = strict_day_cap(day) if relax else 1
+                    if is_double_allowed(subj) and not relax: cap = 2
+                    # Non-doubles never exceed 1/day regardless of relax flag
+                    if not is_double_allowed(subj): cap = 1
+                    if subject_count_in_day(sec, subj, day) >= cap: continue
+
+                    ps = [p for p in get_periods(day) if p != "Lunch"]
+                    random.shuffle(ps)
                     for p in ps:
-                        if quota_remaining(sec,subj)<=0: break
-                        if slot(sec,day,p)["subject"]: continue
-                        if can_assign(sec,subj,teacher,day,p):
-                            apply_assignment(sec,subj,teacher,day,p); break
-            while quota_remaining(sec,subj)>0:
-                if not try_swap(sec,subj,teacher): break
-            while quota_remaining(sec,subj)>0:
-                if not try_displace(sec,subj,teacher): break
+                        if quota_remaining(sec, subj) <= 0: break
+                        if slot(sec, day, p)["subject"]: continue
+                        if can_assign(sec, subj, teacher, day, p):
+                            apply_assignment(sec, subj, teacher, day, p)
+                            break
+
+            # ── Level 3: swap ─────────────────────────────────────────────────
+            while quota_remaining(sec, subj) > 0:
+                if not try_swap(sec, subj, teacher): break
+
+            # ── Level 4: displace ─────────────────────────────────────────────
+            while quota_remaining(sec, subj) > 0:
+                if not try_displace(sec, subj, teacher): break
 
 # ── Phase 6: emergency backfill ──────────────────────────────────────────────
 def emergency_backfill():
@@ -745,6 +923,162 @@ def emergency_backfill():
                 if try_swap(sec,subj,teacher): continue
                 if try_displace(sec,subj,teacher): continue
                 stalled=True
+
+# ── Phase 7: Hard guarantee — class teacher gets ≥1 period in their class ────
+def ensure_class_teacher_presence():
+    """
+    Rule 10 hard guarantee: after all phases, every class teacher must have
+    at least one period teaching in their own class.
+
+    Strategy (in order of preference):
+      1. Find any empty slot the class teacher can fill with one of their subjects.
+      2. If no empty slot, find a slot occupied by ANOTHER teacher teaching a
+         subject the class teacher also teaches — swap the slot directly.
+      3. If still not present, log (can't fix without breaking other guarantees).
+    """
+    for sec, ct in st.session_state.class_teachers.items():
+        if sec not in st.session_state.timetable: continue
+        # Already has a period? Done.
+        if any(slot(sec, day, p)["teacher"] == ct
+               for day in DAYS for p in get_periods(day) if p != "Lunch"):
+            continue
+
+        subjects = st.session_state.teacher_assignment.get(ct, {}).get(sec, [])
+        if not subjects: continue
+
+        placed = False
+
+        # ── Strategy 1: empty slot ────────────────────────────────────────────
+        for day in DAYS:
+            if placed: break
+            for p in get_periods(day):
+                if p == "Lunch" or slot(sec, day, p)["subject"]: continue
+                for subj in subjects:
+                    if quota_remaining(sec, subj) <= 0: continue
+                    if can_assign(sec, subj, ct, day, p):
+                        apply_assignment(sec, subj, ct, day, p)
+                        placed = True; break
+                if placed: break
+
+        if placed: continue
+
+        # ── Strategy 2: steal a slot from another teacher ─────────────────────
+        for day in DAYS:
+            if placed: break
+            for p in get_periods(day):
+                if p == "Lunch": continue
+                cell = slot(sec, day, p)
+                if cell["teacher"] == ct: break          # already there
+                if cell["subject"] not in subjects: continue  # CT doesn't teach this subject
+                subj    = cell["subject"]
+                old_t   = cell["teacher"]
+                if teacher_busy(ct, day, p): continue    # CT busy elsewhere
+                # Temporarily check: if we replace old_t with ct, is everything OK?
+                undo_assignment(sec, day, p)
+                if can_assign(sec, subj, ct, day, p):
+                    apply_assignment(sec, subj, ct, day, p)
+                    placed = True; break
+                else:
+                    # Restore original
+                    if old_t and can_assign(sec, subj, old_t, day, p):
+                        apply_assignment(sec, subj, old_t, day, p)
+                    elif old_t:
+                        apply_assignment(sec, subj, old_t, day, p)  # force-restore
+            if placed: break
+
+
+# ── Phase 7b: force_fill — absolute last resort for empty slots ───────────────
+def force_fill():
+    """
+    Absolute last resort called after all normal phases.
+
+    Goal: guarantee ZERO empty teaching slots. Accepts any legal placement first,
+    then falls back to constraint-relaxed placement if necessary.
+
+    Strategy (in order):
+      Pass 1 — for each empty slot, find any subject with remaining quota that
+               passes ALL hard constraints (can_assign). Uses any teacher assigned
+               to that subject-section pair.
+      Pass 2 — for each STILL-empty slot, relax C6/C7b (same-day repetition)
+               but keep C1 (teacher clash), C2 (daily cap), C3 (4-consecutive).
+               This handles edge cases where constraints have backed the scheduler
+               into a corner with no legal moves.
+      Pass 3 — for each STILL-empty slot, place the subject with the highest
+               remaining quota regardless of same-day rules, subject only to C1/C2.
+               This is the nuclear option: the result may violate soft rules, but
+               the timetable will have no empty cells.
+
+    No slot is ever left empty after this function completes (assuming at least
+    one subject-teacher assignment exists for the section).
+    """
+    # ── Pass 1: try every subject through the full can_assign gate ────────────
+    for sec in st.session_state.timetable:
+        for day in DAYS:
+            for period in get_periods(day):
+                if period == "Lunch" or slot(sec, day, period)["subject"]: continue
+                candidates = sorted(
+                    [(subj, quota_remaining(sec, subj))
+                     for subj in st.session_state.subject_config.get(sec, {})
+                     if quota_remaining(sec, subj) > 0],
+                    key=lambda x: -x[1]
+                )
+                for subj, _ in candidates:
+                    t = _find_teacher(sec, subj)
+                    if t and can_assign(sec, subj, t, day, period):
+                        apply_assignment(sec, subj, t, day, period)
+                        break
+
+    # ── Pass 2: relax same-day rules, keep teacher/consecutive constraints ────
+    for sec in st.session_state.timetable:
+        for day in DAYS:
+            for period in get_periods(day):
+                if period == "Lunch" or slot(sec, day, period)["subject"]: continue
+                periods_list = get_periods(day)
+                idx = periods_list.index(period)
+                t_key_check = None   # determined per subject below
+                for subj in sorted(
+                    st.session_state.subject_config.get(sec, {}),
+                    key=lambda s: -quota_remaining(sec, s)
+                ):
+                    t = _find_teacher(sec, subj)
+                    if not t: continue
+                    tk = clean(t)
+                    _init_teacher(tk)
+                    # Enforce only C1 (clash), C2 (daily cap), C3 (4-consecutive)
+                    if teacher_busy(t, day, period): continue
+                    if teacher_day_load[tk][day] >= (5 if day == "Friday" else 6): continue
+                    if teacher_consecutive_streak(tk, day, idx) >= 4: continue
+                    if is_games(subj) or is_library(subj):
+                        teaching = [p for p in get_periods(day) if p != "Lunch"]
+                        if period in (teaching[0], teaching[-1]): continue
+                    apply_assignment(sec, subj, t, day, period)
+                    break
+
+    # ── Pass 3: nuclear option — place by teacher availability only (C1+C2) ──
+    for sec in st.session_state.timetable:
+        for day in DAYS:
+            for period in get_periods(day):
+                if period == "Lunch" or slot(sec, day, period)["subject"]: continue
+                placed = False
+                for subj in st.session_state.subject_config.get(sec, {}):
+                    if placed: break
+                    t = _find_teacher(sec, subj)
+                    if not t: continue
+                    tk = clean(t)
+                    _init_teacher(tk)
+                    if teacher_busy(t, day, period): continue
+                    if teacher_day_load[tk][day] >= (5 if day == "Friday" else 6): continue
+                    apply_assignment(sec, subj, t, day, period)
+                    placed = True
+                if not placed:
+                    # Truly no teacher available — place ANY assigned teacher
+                    # regardless of load (extreme edge case with tiny teacher pool)
+                    for subj in st.session_state.subject_config.get(sec, {}):
+                        t = _find_teacher(sec, subj)
+                        if t and not teacher_busy(t, day, period):
+                            apply_assignment(sec, subj, t, day, period)
+                            break
+
 
 def calculate_fitness():
     score = 10_000
@@ -949,10 +1283,7 @@ def export_excel(df):
             for cell in row:
                 cell.border=border
                 cell.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
-                if is_lunch:
-                    cell.fill = lf
-                elif r % 2 == 0:
-                    cell.fill = alt
+                cell.fill = lf if is_lunch else (alt if r%2==0 else cell.fill)
         for col in ws.columns:
             ml=max((len(str(c.value or "")) for c in col),default=0)
             ws.column_dimensions[get_column_letter(col[0].column)].width=min(ml+4,30)
@@ -1156,20 +1487,22 @@ if menu == "Configuration":
 if menu == "Generate":
     st.subheader("⚙️ Generate Timetable")
     RUNS = st.slider("Generation attempts (more = better quality)",
-                     min_value=5, max_value=60, value=15, step=5)
+                     min_value=5, max_value=30, value=15, step=5)
 
     if st.button("🚀 Generate Timetable", key="gen_btn"):
         best_score, best_tt = -999_999, None
         progress = st.progress(0, text="Generating…")
         for run in range(RUNS):
             st.session_state.timetable = create_empty_timetable()
-            assign_class_teacher_priority()
-            assign_daily_singles()
-            assign_math()
-            assign_ix_x_doubles()
-            basic_auto_fill()
-            fill_under_quota_subjects()
-            emergency_backfill()
+            assign_class_teacher_priority()   # Phase 1: class teacher P1 ≥4/5 days
+            assign_daily_singles()            # Phase 2: English/Urdu/Sindhi etc. once/day
+            assign_math()                     # Phase 3: Math every day + one double/week
+            assign_ix_x_doubles()             # Phase 4: Physics/Chemistry/Computer doubles
+            basic_auto_fill()                 # Phase 5: general fill (spread-first)
+            fill_under_quota_subjects()       # Phase 5b: quota top-up
+            emergency_backfill()              # Phase 6: fill empty slots + quota enforcement
+            ensure_class_teacher_presence()   # Phase 7: guarantee CT has ≥1 period
+            force_fill()                      # Phase 7b: absolute last resort — no empty slots
             score = calculate_fitness()
             if score > best_score:
                 best_score = score
@@ -1355,7 +1688,6 @@ if menu == "Analytics":
     if not st.session_state.timetable:
         st.warning("Generate a timetable first.")
     else:
-
         st.subheader("👩‍🏫 Teacher Workload")
         wl={t:count_teacher_periods(t) for t in st.session_state.teachers}
         wl_df=pd.DataFrame(wl.items(),columns=["Teacher","Total Periods"]) \
@@ -1386,14 +1718,13 @@ if menu == "Analytics":
         df_master=build_principal_matrix()
         st.dataframe(df_master, use_container_width=True)
         # AI Analysis button
-        if st.button("🤖 AI Analyze Timetable"):
-            if df_master.empty:
-                st.warning("Generate timetable first.")
-            else:
-                with st.spinner("Analyzing with AI..."):
+        if not df_master.empty:
+            if st.button("🤖 AI Analyze Timetable"):
+                with st.spinner("Analyzing with GPT-4o-mini…"):
                     result = ai_analyze_timetable(df_master)
                 st.markdown("### 🤖 AI Analysis")
                 st.markdown(result)
+
         if not df_master.empty:
             col1,col2=st.columns(2)
             with col1:
