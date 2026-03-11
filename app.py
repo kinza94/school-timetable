@@ -143,6 +143,10 @@ if "data_loaded" not in st.session_state:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if not st.session_state.logged_in:
+    st.markdown("<h1 style='text-align:center;color:#1f4e79;'>DHACSS PHASE IV CAMPUS</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align:center;'>Academic Timetable Intelligence</h3>", unsafe_allow_html=True)
+
+
     st.title("🔐 Login")
     _, col, _ = st.columns([1,2,1])
     with col:
