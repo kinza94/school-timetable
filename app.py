@@ -143,9 +143,6 @@ if "data_loaded" not in st.session_state:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align:center;color:#1f4e79;'>DHACSS PHASE IV CAMPUS</h1>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align:center;'>Academic Timetable Intelligence</h3>", unsafe_allow_html=True)
-
 
     st.title("🔐 Login")
     _, col, _ = st.columns([1,2,1])
@@ -423,10 +420,16 @@ def can_assign(section, subject, teacher, day, period):
     if not is_double_allowed(subject):                    # C7
         if prev_s.upper()==su or next_s.upper()==su: return False
 
-    if is_math(subject):                                  # C8
+    if is_math(subject):  # C8
+
+        # HARD LIMIT: max 2 maths per day
+        if subject_count_in_day(section, subject, day) >= 2:
+            return False
+
         if is_math(prev_s) or is_math(next_s):
             ex = math_double_day(section)
-            if ex is not None and ex != day: return False
+            if ex is not None and ex != day:
+                return False
 
     if is_ix_x_double(subject):                          # C9
         if (prev_s.upper()==su or next_s.upper()==su) and \
