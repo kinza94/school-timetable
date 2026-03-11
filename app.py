@@ -2,7 +2,7 @@ import streamlit as st
 import os
 from openai import OpenAI
 
-client = OpenAI(api_key="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")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ✅ FIX 1: set_page_config MUST be the very first Streamlit call
 st.set_page_config(page_title="School Scheduler Pro", layout="wide")
