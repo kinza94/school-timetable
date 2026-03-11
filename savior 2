@@ -26,6 +26,7 @@ import os
 # ==================================================
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
 MON_WED_TIMES = {
     "P1": "8:00-8:50",
     "P2": "8:50-9:30",
@@ -67,6 +68,7 @@ ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "Kinz@420"
 HEAD_USERNAME = "head"
 HEAD_PASSWORD = "9999"
+VIEWER_USERNAME = "teacher"
 VIEWER_PASSWORD = "1234"
 
 # ==================================================
@@ -111,18 +113,18 @@ def get_periods(day):
         return ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6"]
     return ["P1", "P2", "P3", "P4", "Lunch", "P5", "P6", "P7", "P8"]
 
-def get_time(day, period):
 
+def get_time(day, period):
+    """Return the bell-timing string for a given day and period."""
     if day in ["Monday", "Tuesday", "Wednesday"]:
         return MON_WED_TIMES.get(period, "")
-
     elif day == "Thursday":
         return THURSDAY_TIMES.get(period, "")
-
     elif day == "Friday":
         return FRIDAY_TIMES.get(period, "")
-
     return ""
+
+
 # ==================================================
 # ---------------- SESSION STATE -------------------
 # ==================================================
@@ -1591,12 +1593,10 @@ def export_teacher_view_word(teacher):
 
     for r, period in enumerate(ALL_PERIODS):
         table.cell(r + 1, 0).text = period
-        table.cell(r + 1, 1).text = get_time(day, period)
+        table.cell(r + 1, 1).text = get_time("Monday", period)
 
         col_index = 2
         for day in DAYS:
-            actual_period = period
-
             # Friday period list = P1 P2 P3 P4 Lunch P5 P6
             # ALL_PERIODS     = P1 P2 P3 P4 Lunch P5 P6 P7 P8
             # P7, P8 don't exist on Friday → leave blank
@@ -1645,7 +1645,7 @@ def export_teacher_view_pdf(teacher):
     data = [["Period", "Mon-Thu Time", "Mon", "Tue", "Wed", "Thu", "Fri", "Fri Time"]]
 
     for period in ALL_PERIODS:
-        row = [period, get_time(day, period)]
+        row = [period, get_time("Monday", period)]
 
         for day in DAYS:
             actual_period = period
@@ -1706,34 +1706,74 @@ def export_class_timetable_pdf(section):
     elements.append(Paragraph(f"<b>Class Teacher:</b> {class_teacher}", styles["Normal"]))
     elements.append(Spacer(1, 20))
 
-    data = [["Period", "Mon-Thu Time"] + DAYS + ["Fri Time"]]
+    data = [[
+        "Period",
+        "Mon-Wed Time",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday Time",
+        "Thursday",
+        "Friday",
+        "Fri Time"
+    ]]
 
     for period in ALL_PERIODS:
-        row = [period, get_time(day, period)]
 
-        for day in DAYS:
-            if period in get_periods(day):
-                actual_period = period
+        row = [
+            period,
+            MON_WED_TIMES.get(period, "")
+        ]
 
-                # Friday: P7/P8 don't exist — blank cell
-                if day == "Friday" and period not in get_periods(day):
-                    row.append("")
-                    continue
+        # Monday
+        if period in get_periods("Monday"):
+            cell = st.session_state.timetable[section]["Monday"][period]
+            row.append(f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else "")
+        else:
+            row.append("")
 
-                cell = st.session_state.timetable[section][day][period]
-                text = f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else ""
-            else:
-                text = ""
+        # Tuesday
+        if period in get_periods("Tuesday"):
+            cell = st.session_state.timetable[section]["Tuesday"][period]
+            row.append(f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else "")
+        else:
+            row.append("")
 
-            row.append(text)
+        # Wednesday
+        if period in get_periods("Wednesday"):
+            cell = st.session_state.timetable[section]["Wednesday"][period]
+            row.append(f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else "")
+        else:
+            row.append("")
 
+        # Thursday time
+        row.append(THURSDAY_TIMES.get(period, ""))
+
+        # Thursday subject
+        if period in get_periods("Thursday"):
+            cell = st.session_state.timetable[section]["Thursday"][period]
+            row.append(f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else "")
+        else:
+            row.append("")
+
+        # Friday subject
+        if period in get_periods("Friday"):
+            cell = st.session_state.timetable[section]["Friday"][period]
+            row.append(f"{cell['subject']}\n({cell['teacher']})" if cell["subject"] else "")
+        else:
+            row.append("")
+
+        # Friday time
         row.append(FRIDAY_TIMES.get(period, ""))
+
         data.append(row)
 
-    page_width = landscape(A4)[0] - 40
+    page_width = landscape(A4)[0] - 80
     num_cols = len(data[0])
-    col_width = max(page_width / num_cols, 40)
-    table = Table(data, colWidths=[col_width] * num_cols, repeatRows=1)
+    col_widths = [50, 80] + [(page_width - 130) / len(DAYS)] * len(DAYS) + [80]
+    page_width = landscape(A4)[0] - 80
+    col_width = page_width / len(data[0])
+    table = Table(data, colWidths=[col_width] * len(data[0]), repeatRows=1)
 
     table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
@@ -1773,13 +1813,11 @@ def export_class_timetable_to_word(section):
 
     for r, period in enumerate(ALL_PERIODS):
         table.cell(r + 1, 0).text = period
-        table.cell(r + 1, 1).text = get_time(day, period)
+        table.cell(r + 1, 1).text = get_time("Monday", period)
 
         col_index = 2
         for day in DAYS:
             if period in get_periods(day):
-                actual_period = period
-
                 # Friday: P7/P8 don't exist — blank cell
                 if day == "Friday" and period not in get_periods(day):
                     table.cell(r + 1, col_index).text = ""
@@ -1866,10 +1904,7 @@ def build_principal_matrix():
             row = {
                 "Day": day,
                 "P. No.": "" if period == "Lunch" else period_no,
-                "Bell Timing": (
-                    get_time(day, period) if day != "Friday"
-                    else FRIDAY_TIMES.get(period, "")
-                ),
+                "Bell Timing": get_time(day, period),
             }
 
             for teacher in st.session_state.teachers:
@@ -2347,18 +2382,26 @@ if menu == "Class View":
 
         df = pd.DataFrame(
             {
-                "Period":        display_periods,
+                "Period": display_periods,
                 "Mon-Wed Time": [MON_WED_TIMES.get(p, "") for p in display_periods],
+
+                "Monday": df_data["Monday"],
+                "Tuesday": df_data["Tuesday"],
+                "Wednesday": df_data["Wednesday"],
+
                 "Thursday Time": [THURSDAY_TIMES.get(p, "") for p in display_periods],
-                **{day: df_data[day] for day in DAYS},
-                "Fri Time":      [fri_times_map.get(p, "")   for p in display_periods],
+                "Thursday": df_data["Thursday"],
+
+                "Friday": df_data["Friday"],
+                "Fri Time": [fri_times_map.get(p, "") for p in display_periods],
             }
         ).set_index("Period")
 
         edited_df = st.data_editor(
             df,
             use_container_width=True,
-            disabled=not is_admin
+            disabled=not is_admin,
+            key="class_editor"
         )
 
         col1, col2 = st.columns(2)
@@ -2390,25 +2433,21 @@ if menu == "Class View":
                 for period in ALL_PERIODS:
                     if period in get_periods(day):
                         cell = edited_df.loc[period, day]
-
                         if cell:
-                            try:
-                                parts = cell.split("\n")
-                                subject = parts[0].strip()
-                                teacher = ""
-                                if len(parts) > 1:
-                                    teacher = parts[1].replace("(", "").replace(")", "").strip().upper()
-
-                                st.session_state.timetable[sec][day][period]["subject"] = subject
-                                st.session_state.timetable[sec][day][period]["teacher"] = teacher
-                            except Exception as e:
-                                st.warning(f"Format error in {day}-{period}: {e}")
+                            parts = cell.split("\n")
+                            subject = parts[0].strip()
+                            teacher = ""
+                            if len(parts) > 1:
+                                teacher = parts[1].replace("(", "").replace(")", "").strip().upper()
+                            st.session_state.timetable[sec][day][period]["subject"] = subject
+                            st.session_state.timetable[sec][day][period]["teacher"] = teacher
                         else:
                             st.session_state.timetable[sec][day][period]["subject"] = ""
                             st.session_state.timetable[sec][day][period]["teacher"] = ""
 
             save_all_data()
             st.success("Manual changes saved")
+            st.session_state["refresh_teacher_view"] = True
             st.rerun()
 
         # Validations after class view
@@ -2439,6 +2478,9 @@ if menu == "Teacher View":
             list(st.session_state.teachers.keys()),
             key="teacher_view_select"
         )
+
+        # Clear any pending refresh flag from Class View saves
+        st.session_state.pop("refresh_teacher_view", None)
 
         df_data = {}
 
@@ -2472,11 +2514,11 @@ if menu == "Teacher View":
         # Build in one shot — avoids ValueError from df.insert() on reruns
         df = pd.DataFrame(
             {
-                "Period":        ALL_PERIODS,
-                "Mon-Wed Time": [MON_WED_TIMES.get(p, "") for p in ALL_PERIODS],
-                "Thursday Time": [THURSDAY_TIMES.get(p, "") for p in ALL_PERIODS],
+                "Period":          ALL_PERIODS,
+                "Mon-Wed Time":    [MON_WED_TIMES.get(p, "")    for p in ALL_PERIODS],
+                "Thursday Time":   [THURSDAY_TIMES.get(p, "")   for p in ALL_PERIODS],
                 **{day: df_data[day] for day in DAYS},
-                "Fri Time":      [FRIDAY_TIMES.get(p, "")    for p in ALL_PERIODS],
+                "Fri Time":        [FRIDAY_TIMES.get(p, "")     for p in ALL_PERIODS],
             }
         ).set_index("Period")
         st.dataframe(df)

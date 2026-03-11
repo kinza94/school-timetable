@@ -1,4 +1,8 @@
 import streamlit as st
+import os
+from openai import OpenAI
+
+client = OpenAI(api_key="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")
 
 # ✅ FIX 1: set_page_config MUST be the very first Streamlit call
 st.set_page_config(page_title="School Scheduler Pro", layout="wide")
@@ -97,7 +101,7 @@ teacher_day_load = {}
 teacher_timeline = {}
 double_used = {}
 subject_remaining = {}   # {(section, subject): remaining_count}  — single source of truth for quotas
-
+teacher_three_streak_count = {}
 # ==================================================
 # ---------------- HELPERS -------------------------
 # ==================================================
@@ -552,7 +556,8 @@ def find_swap_option(section, teacher, subject, day, period):
                 if not teacher_busy(teacher, day, period):
                     swaps.append((d, p))
     return swaps
-
+def is_library(subject):
+    return "LIBRARY" in subject.upper()
 
 # ==================================================
 # ---------------- CONSTRAINT ENGINE ---------------
@@ -637,8 +642,18 @@ def is_ix_x_double(subject):
 
 
 def is_double_allowed(subject):
-    """Only Math and IX-X-science subjects may ever form a double period."""
-    return is_math(subject) or is_ix_x_double(subject)
+
+    s = subject.upper()
+
+    if "MATH" in s:
+        return True
+
+    if "PHYSICS" in s or "CHEMISTRY" in s or "COMPUTER IX-X" in s:
+        return True
+
+    return False
+def subject_weekly_quota(section, subject):
+    return st.session_state.subject_config.get(section, {}).get(subject, 0)
 
 
 def get_last_teaching_period(day):
@@ -793,9 +808,16 @@ def can_assign(section, subject, teacher, day, period):
         # Teacher exists in assignment but not yet initialised – add them now
         teacher_day_load[t_key] = {d: 0 for d in DAYS}
         teacher_timeline[t_key] = {d: [0] * len(get_periods(d)) for d in DAYS}
-    if teacher_day_load[t_key][day] >= 6:
-        return False
-
+    if day == "Friday":
+        if teacher_day_load[t_key][day] >= 5:
+            return False
+    else:
+        if teacher_day_load[t_key][day] >= 6:
+            return False
+    ##  core subject
+    if is_core(subject):
+        if subject_count_in_day(section, subject, day) >= 1:
+            return False
     # ── C3 + C4: consecutive checks (Lunch = hard break) ──
     t_streak = teacher_consecutive_streak(t_key, day, idx)
     if t_streak >= 4:          # C3 – hard block
@@ -834,7 +856,12 @@ def can_assign(section, subject, teacher, day, period):
         st.session_state.timetable[section][day][next_period]["subject"]
         if next_period and real_adjacent(next_period) else ""
     )
+    # Rule: No subject should repeat in the same day
+    if subject_count_in_day(section, subject, day) >= 1:
 
+        # Only allow if it is a valid double subject
+        if not is_double_allowed(subject):
+            return False
     # ── C6: Daily-single subjects (English / Urdu / General Science) ────
     if is_daily_single(subject):
         if subject_count_in_day(section, subject, day) >= 1:
@@ -843,7 +870,11 @@ def can_assign(section, subject, teacher, day, period):
             return False                      # would create a double
         if next_subject.upper() == subject.upper():
             return False
+    weekly = st.session_state.subject_config.get(section, {}).get(subject, 0)
 
+    if weekly < 6:
+        if prev_subject.upper() == subject.upper() or next_subject.upper() == subject.upper():
+            return False
     # ── C7: General no-double rule ───────────────────────────────────────
     if not is_double_allowed(subject):
         if prev_subject.upper() == subject.upper():
@@ -852,10 +883,12 @@ def can_assign(section, subject, teacher, day, period):
             return False
 
     # ── C8: Math double — at most ONE day per week ───────────────────────
-    if is_math(subject):
-        would_be_double = (
-            is_math(prev_subject) or is_math(next_subject)
-        )
+        if is_math(subject):
+            weekly = subject_weekly_quota(section, subject)
+
+            if weekly < 6:
+                if prev_subject.upper() == subject.upper() or next_subject.upper() == subject.upper():
+                    return False
         if would_be_double:
             existing = math_double_day(section)
             if existing is not None and existing != day:
@@ -871,12 +904,23 @@ def can_assign(section, subject, teacher, day, period):
             return False
 
     # ── C10: Games never last period ────────────────────────────────────
-    if is_games(subject):
-        if period == get_last_teaching_period(day):
+    # ── C10: Games / Library cannot be first or last period
+    if is_games(subject) or is_library(subject):
+
+        periods = get_periods(day)
+
+        if period == periods[0]:  # first period
+            return False
+
+        if period == get_last_teaching_period(day):  # last period
             return False
 
     return True
 
+CORE_SUBJECTS = ["MATH", "ENGLISH", "URDU", "GENERAL SCIENCE"]
+def is_core(subject):
+    s = subject.upper()
+    return any(core in s for core in CORE_SUBJECTS)
 
 # ── State writer ──────────────────────────────────────────
 
@@ -894,6 +938,12 @@ def apply_assignment(section, subject, teacher, day, period):
 
     teacher_day_load[t_key][day]    += 1
     teacher_timeline[t_key][day][idx] = 1
+
+    streak = teacher_consecutive_streak(t_key, day, idx)
+    teacher_three_streak_count.setdefault(t_key, 0)
+
+    if streak == 3:
+        teacher_three_streak_count[t_key] += 1
 
     # Decrement quota tracker — the authoritative remaining count
     key = (section, subject)
@@ -991,6 +1041,10 @@ def create_empty_timetable():
     teacher_timeline.clear()
     double_used.clear()
     subject_remaining.clear()
+    teacher_three_streak_count.clear()
+
+    for t in st.session_state.teachers:
+        teacher_three_streak_count[clean(t)] = 0
 
     # Initialise quota tracker — every (section, subject) starts at its full weekly count
     for section, subj_map in st.session_state.subject_config.items():
@@ -2006,7 +2060,25 @@ def export_excel(df):
 
     return file
 
+def ai_analyze_timetable(df):
 
+    prompt = f"""
+    Analyze this school timetable and check:
+
+    1. Teacher workload balance
+    2. Subject distribution
+    3. Any possible improvements
+
+    Timetable:
+    {df.to_string()}
+    """
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt
+    )
+
+    return response.output_text
 # ==================================================
 # ---------------- SIDEBAR -------------------------
 # ==================================================
@@ -2255,7 +2327,7 @@ if menu == "Generate":
         best_score = -999999
         best_timetable = None
 
-        for _ in range(15):
+        for _ in range(60):
             temp_table = create_empty_timetable()
             st.session_state.timetable = temp_table
 
@@ -2580,6 +2652,10 @@ if menu == "Analytics":
         st.subheader("School Master Timetable")
         df_master = build_principal_matrix()
         st.dataframe(df_master, use_container_width=True)
+
+        if st.button("AI Analyze Timetable"):
+            analysis = ai_analyze_timetable(df_master)
+            st.write(analysis)
 
         # Export buttons — only shown when df_master has data
         if not df_master.empty:
