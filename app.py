@@ -621,7 +621,7 @@ IX_X_DOUBLE_SUBJECTS = [
 ]
 MATH_KEYWORD  = "MATH"
 GAMES_KEYWORD = "GAMES"
-PRACTICAL_KEYWORD = "PRACTICAL"
+
 _DS_SORTED = sorted(DAILY_SINGLE_KEYWORDS, key=len, reverse=True)
 
 def is_daily_single(subject):
@@ -630,13 +630,11 @@ def is_daily_single(subject):
 
 def is_math(subject):    return MATH_KEYWORD  in subject.upper()
 def is_games(subject):   return GAMES_KEYWORD in subject.upper()
-def is_practical(subject):
-    return PRACTICAL_KEYWORD in subject.upper()
 def is_ix_x_double(subject):
     s = subject.upper()
     return any(t in s for t in IX_X_DOUBLE_SUBJECTS)
 def is_double_allowed(subject):
-    return is_math(subject) or is_ix_x_double(subject) or is_practical(subject)
+    return is_math(subject) or is_ix_x_double(subject)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTRAINT ENGINE
@@ -706,10 +704,7 @@ def can_assign(section, subject, teacher, day, period):
     if is_daily_single(subject):
         if subject_count_in_day(section, subject, day) >= 1: return False
         if prev_s.upper() == su or next_s.upper() == su:     return False
-    # practical only once per week
-    if is_practical(subject):
-        if subject_count_total(section, subject) >= 2:
-            return False
+
     if not is_double_allowed(subject):
         if subject_count_in_day(section, subject, day) >= 1: return False
 
