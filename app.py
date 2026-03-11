@@ -1354,13 +1354,14 @@ if menu == "Analytics":
         df_master=build_principal_matrix()
         st.dataframe(df_master, use_container_width=True)
         # AI Analysis button
-        if not df_master.empty:
-            if st.button("🤖 AI Analyze Timetable"):
-                with st.spinner("Analyzing with GPT-4o-mini…"):
+        if st.button("🤖 AI Analyze Timetable"):
+            if df_master.empty:
+                st.warning("Generate timetable first.")
+            else:
+                with st.spinner("Analyzing with AI..."):
                     result = ai_analyze_timetable(df_master)
                 st.markdown("### 🤖 AI Analysis")
                 st.markdown(result)
-
         if not df_master.empty:
             col1,col2=st.columns(2)
             with col1:
