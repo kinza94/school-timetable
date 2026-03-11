@@ -143,6 +143,9 @@ if "data_loaded" not in st.session_state:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if not st.session_state.logged_in:
+    st.markdown("<h1 style='text-align:center;color:#1f4e79;'>DHACSS PHASE IV CAMPUS</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align:center;'>Academic Scheduling Engine</h3>", unsafe_allow_html=True)
+
     st.title("🔐 Login")
     _, col, _ = st.columns([1,2,1])
     with col:
@@ -407,6 +410,9 @@ def can_assign(section, subject, teacher, day, period):
 
     # ── C1: teacher clash ─────────────────────────────────────────────────────
     if teacher_busy(teacher, day, period): return False
+    # weekly load limit
+    if count_teacher_periods(teacher) >= 25:
+        return False
 
     # ── C2: daily cap ─────────────────────────────────────────────────────────
     t_key = clean(teacher)
