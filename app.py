@@ -1124,7 +1124,7 @@ if menu == "Configuration":
 if menu == "Generate":
     st.subheader("⚙️ Generate Timetable")
     RUNS = st.slider("Generation attempts (more = better quality)",
-                     min_value=5, max_value=30, value=15, step=5)
+                     min_value=5, max_value=60, value=15, step=5)
 
     if st.button("🚀 Generate Timetable", key="gen_btn"):
         best_score, best_tt = -999_999, None
@@ -1323,6 +1323,7 @@ if menu == "Analytics":
     if not st.session_state.timetable:
         st.warning("Generate a timetable first.")
     else:
+
         st.subheader("👩‍🏫 Teacher Workload")
         wl={t:count_teacher_periods(t) for t in st.session_state.teachers}
         wl_df=pd.DataFrame(wl.items(),columns=["Teacher","Total Periods"]) \
