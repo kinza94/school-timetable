@@ -1156,6 +1156,11 @@ def assign_math():
     C8 – Math appears every day.
          Exactly one day per week gets a consecutive double Math period.
     """
+    for day in DAYS:
+
+        if subject_count_in_day(section, subject, day) >= 1:
+            continue
+
     for section in st.session_state.subject_config:
         for subject, count in st.session_state.subject_config[section].items():
             if not is_math(subject):
@@ -2678,4 +2683,5 @@ if menu == "Analytics":
                         "Download Excel Timetable",
                         f,
                         file_name="School_Timetable.xlsx"
+
                 )
