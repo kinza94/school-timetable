@@ -385,6 +385,10 @@ def is_core(subject):
     return any(c in subject.upper() for c in CORE_SUBJECTS)
 
 def can_assign(section, subject, teacher, day, period):
+    # Core subjects must appear only once per day
+    if subject.upper() in ["ENGLISH", "URDU", "GENERAL SCIENCE"]:
+        if subject_count_in_day(section, subject, day) >= 1:
+            return False
     periods = get_periods(day)
     idx     = periods.index(period)
     if period == "Lunch": return False
