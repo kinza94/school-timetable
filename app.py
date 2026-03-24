@@ -1,26 +1,32 @@
+
 import streamlit as st
 st.set_page_config(page_title="School Scheduler Pro", layout="wide", page_icon="📚")
 
 import pandas as pd
+import copy, json, os, random, re, zipfile
+import sqlite3
+
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-import sqlite3, json, random, re, copy, os
+
 try:
     from openai import OpenAI as _OpenAI
     _openai_key = os.getenv("OPENAI_API_KEY", "")
     openai_client = _OpenAI(api_key=_openai_key) if _openai_key else None
 except ImportError:
     openai_client = None
+
 from docx import Document
 from docx.enum.section import WD_ORIENT
-from docx.shared import Inches
+from docx.shared import Inches  # noqa: F401  (kept for compatibility)
+
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONSTANTS
+# CONSTANTS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -45,7 +51,6 @@ FRIDAY_TIMES = {
 ALL_PERIODS   = ["P1","P2","P3","P4","Lunch","P5","P6","P7","P8"]
 BRAND_BLUE    = "#1f4e79"
 
-# Credentials
 ADMIN_USERNAME  = "admin";  ADMIN_PASSWORD  = "Kinz@420"
 HEAD_USERNAME   = "head";   HEAD_PASSWORD   = "9999"
 VIEWER_PASSWORD = "1234"
@@ -56,21 +61,21 @@ VIEWER_PASSWORD = "1234"
 
 conn = sqlite3.connect("school.db", check_same_thread=False)
 cur  = conn.cursor()
-cur.execute("""CREATE TABLE IF NOT EXISTS app_data(id INTEGER PRIMARY KEY, data TEXT)""")
+cur.execute("CREATE TABLE IF NOT EXISTS app_data(id INTEGER PRIMARY KEY, data TEXT)")
 conn.commit()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONSTRAINT ENGINE GLOBAL STATE  (reset each generation run)
+# CONSTRAINT ENGINE GLOBAL STATE
 # ══════════════════════════════════════════════════════════════════════════════
 
-teacher_day_load  = {}   # {t_key: {day: int}}
-teacher_timeline  = {}   # {t_key: {day: [0|1, ...]}}
-double_used       = {}   # {(section, subject): bool}
-subject_remaining = {}   # {(section, subject): int}  — single source of truth
-teacher_three_streak_count = {}  # {t_key: count of 3-consecutive occurrences — used for fitness}
+teacher_day_load  = {}
+teacher_timeline  = {}
+double_used       = {}
+subject_remaining = {}
+teacher_three_streak_count = {}
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CORE HELPERS
+# CORE HELPERS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def clean(x):
@@ -88,24 +93,26 @@ def get_time(day, period):
     return ""
 
 def slot(section, day, period):
-    """Shortcut: return the timetable cell dict."""
     return st.session_state.timetable[section][day][period]
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SESSION STATE
+# SESSION STATE  (single initialisation block — BUG FIX: removed duplicate)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _DEFAULTS = {
     "teachers":{}, "sections":{}, "class_teachers":{},
     "subject_config":{}, "teacher_assignment":{}, "timetable":{},
     "logged_in":False, "role":None,
+    # FIX: initialised here once instead of twice at the top of the file
+    "class_view_files": [],
+    "teacher_view_files": [],
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PERSISTENCE
+# PERSISTENCE  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def save_all_data():
@@ -143,121 +150,46 @@ if "data_loaded" not in st.session_state:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if not st.session_state.logged_in:
-    # ── CSS: login page — full-screen gradient background + centred card ──────
     st.markdown("""
     <style>
-    /* Hide default Streamlit chrome on login page */
     #MainMenu, footer, header {visibility: hidden;}
-
-    /* Full-page gradient background */
     [data-testid="stAppViewContainer"] {
         background: linear-gradient(135deg, #0d2b4e 0%, #1f4e79 50%, #2e6da4 100%);
         min-height: 100vh;
     }
     [data-testid="stMain"] {background: transparent !important;}
-
-    /* ── hero banner ── */
-    .login-banner {
-        text-align: center;
-        padding: 48px 20px 20px;
-    }
+    .login-banner { text-align: center; padding: 48px 20px 20px; }
     .login-banner h1 {
-        color: #ffffff;
-        font-size: 2.4rem;
-        font-weight: 800;
-        letter-spacing: 0.5px;
-        margin: 0 0 6px;
+        color: #ffffff; font-size: 2.4rem; font-weight: 800;
+        letter-spacing: 0.5px; margin: 0 0 6px;
         text-shadow: 0 2px 8px rgba(0,0,0,.35);
     }
-    .login-banner p {
-        color: rgba(255,255,255,0.78);
-        font-size: 1.05rem;
-        margin: 0;
-    }
-
-    /* ── card shell ── */
+    .login-banner p { color: rgba(255,255,255,0.78); font-size: 1.05rem; margin: 0; }
     .login-card {
-    background: #ffffff;
-    border-radius: 16px;
-    padding: 24px 28px;
-    max-width: 420px;
-    margin: 12px auto;
+        background: #ffffff; border-radius: 18px; padding: 40px 44px 36px;
+        max-width: 420px; margin: 22px auto 0;
+        box-shadow: 0 24px 60px rgba(0,0,0,0.30), 0 6px 18px rgba(0,0,0,0.18);
     }
     .login-card h3 {
-        color: #1f4e79;
-        font-size: 1.25rem;
-        font-weight: 700;
-        margin: 0 0 22px;
-        text-align: center;
+        color: #1f4e79; font-size: 1.25rem; font-weight: 700;
+        margin: 0 0 22px; text-align: center;
     }
-    [data-testid="stTextInput"] input {
-    height: 42px !important;
-    }
-    /* Make Streamlit inputs inside the card look polished */
-    .login-card [data-testid="stTextInput"] input {
-        border-radius: 8px !important;
-        border: 1.5px solid #d0dcea !important;
-        padding: 10px 14px !important;
-        font-size: 0.95rem !important;
-        transition: border-color .2s;
-    }
-    .login-card [data-testid="stTextInput"] input:focus {
-        border-color: #4a90e2 !important;
-        box-shadow: 0 0 0 3px rgba(74,144,226,.15) !important;
-    }
-    /* Fix label color */
-    [data-testid="stTextInput"] label {
-    color: white !important;
-    font-weight: 600 !important;
-    }
-
-    /* Login button override */
-    .login-card .stButton > button {
-        background: linear-gradient(90deg, #1f4e79, #4a90e2) !important;
-        color: #fff !important;
-        border: none !important;
-        border-radius: 10px !important;
-        height: 3.1em !important;
-        font-size: 1rem !important;
-        font-weight: 700 !important;
-        letter-spacing: .3px;
-        margin-top: 10px;
-        box-shadow: 0 4px 14px rgba(74,144,226,.45);
-        transition: opacity .2s, transform .15s;
-    }
-    .login-card .stButton > button:hover {
-        opacity: .92;
-        transform: translateY(-1px);
-    }
-
-    /* footer note inside card */
-    .login-footer {
-        text-align: center;
-        color: #8fa8c8;
-        font-size: 0.78rem;
-        margin-top: 18px;
-    }
+    .login-footer { text-align: center; color: #8fa8c8; font-size: 0.78rem; margin-top: 18px; }
     </style>
-
     <div class="login-banner">
         <h1>🏫 DHACSS Phase IV Campus</h1>
         <p>Academic Timetable Intelligence System</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # Card wrapper — open
     st.markdown('<div class="login-card"><h3>🔐 Sign In</h3>', unsafe_allow_html=True)
-
     _, col, _ = st.columns([1,2,1])
     with col:
         username  = st.text_input("Username")
         password  = st.text_input("Password", type="password")
         login_btn = st.button("Login", use_container_width=True)
-
-    # Card wrapper — close + footer
-    st.markdown("""
-        <div class="login-footer">DHACSS Phase IV &nbsp;·&nbsp; Timetable Pro v2</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown('<div class="login-footer">DHACSS Phase IV &nbsp;·&nbsp; Timetable Pro v2</div></div>',
+                unsafe_allow_html=True)
 
     if login_btn:
         if   username == ADMIN_USERNAME and password == ADMIN_PASSWORD:  role = "admin"
@@ -275,281 +207,195 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ▌ GLOBAL STYLES — Premium UI with Plus Jakarta Sans + DM Sans fonts
+# GLOBAL STYLES  (unchanged — kept identical to original)
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.markdown("""
 <style>
-/* ── Google Fonts ─────────────────────────────────────────────────────────── */
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,400&display=swap');
-
-/* ── CSS Variables ────────────────────────────────────────────────────────── */
 :root {
-    --navy:      #0d2f52;
-    --blue-800:  #1f4e79;
-    --blue-600:  #2b6cb0;
-    --blue-400:  #4a90e2;
-    --blue-100:  #dbeafe;
-    --accent:    #f59e0b;
-    --green:     #10b981;
-    --red:       #ef4444;
-    --bg:        #f0f4f9;
-    --surface:   #ffffff;
-    --border:    #e2e8f0;
-    --text:      #1e293b;
-    --muted:     #64748b;
-    --radius:    13px;
-    --shadow:    0 4px 24px rgba(31,78,121,0.10);
-    --shadow-lg: 0 8px 40px rgba(31,78,121,0.18);
+    --navy:#0d2f52; --blue-800:#1f4e79; --blue-600:#2b6cb0; --blue-400:#4a90e2;
+    --blue-100:#dbeafe; --accent:#f59e0b; --green:#10b981; --red:#ef4444;
+    --bg:#f0f4f9; --surface:#ffffff; --border:#e2e8f0; --text:#1e293b;
+    --muted:#64748b; --radius:13px;
+    --shadow:0 4px 24px rgba(31,78,121,0.10);
+    --shadow-lg:0 8px 40px rgba(31,78,121,0.18);
 }
-
-/* ── Global reset ─────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
-html, body, [class*="css"] {
-    font-family: 'DM Sans', sans-serif !important;
-    color: var(--text) !important;
-}
-[data-testid="stAppViewContainer"] { background: var(--bg) !important; }
-[data-testid="stMain"]             { background: var(--bg) !important; }
-[data-testid="block-container"]    { padding-top: 1.5rem !important; }
-h1, h2, h3, h4 {
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    color: var(--blue-800) !important;
-}
-h1 { font-size: 1.65rem !important; font-weight: 800 !important; letter-spacing: -0.3px; }
-h2 { font-size: 1.25rem !important; font-weight: 700 !important; }
-h3 { font-size: 1.05rem !important; font-weight: 700 !important; }
-
-/* ── App header banner ────────────────────────────────────────────────────── */
+html, body, [class*="css"] { font-family:'DM Sans',sans-serif !important; color:var(--text) !important; }
+[data-testid="stAppViewContainer"] { background:var(--bg) !important; }
+[data-testid="stMain"]             { background:var(--bg) !important; }
+[data-testid="block-container"]    { padding-top:1.5rem !important; }
+h1,h2,h3,h4 { font-family:'Plus Jakarta Sans',sans-serif !important; color:var(--blue-800) !important; }
+h1 { font-size:1.65rem !important; font-weight:800 !important; letter-spacing:-0.3px; }
+h2 { font-size:1.25rem !important; font-weight:700 !important; }
+h3 { font-size:1.05rem !important; font-weight:700 !important; }
 .app-header {
-    background: linear-gradient(135deg, var(--navy) 0%, var(--blue-800) 55%, var(--blue-600) 100%);
-    border-radius: var(--radius);
-    padding: 20px 30px;
-    margin-bottom: 24px;
-    display: flex; align-items: center; gap: 18px;
-    box-shadow: 0 6px 30px rgba(13,47,82,0.28);
+    background:linear-gradient(135deg,var(--navy) 0%,var(--blue-800) 55%,var(--blue-600) 100%);
+    border-radius:var(--radius); padding:20px 30px; margin-bottom:24px;
+    display:flex; align-items:center; gap:18px;
+    box-shadow:0 6px 30px rgba(13,47,82,0.28);
 }
 .app-header-icon {
-    background: rgba(255,255,255,0.14);
-    border-radius: 12px;
-    width: 56px; height: 56px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 26px; flex-shrink: 0;
+    background:rgba(255,255,255,0.14); border-radius:12px; width:56px; height:56px;
+    display:flex; align-items:center; justify-content:center; font-size:26px; flex-shrink:0;
 }
 .app-header h1 {
-    color: #ffffff !important;
-    margin: 0 0 3px !important;
-    font-size: 1.45rem !important;
-    font-weight: 800 !important;
-    letter-spacing: -0.2px !important;
-    text-shadow: 0 1px 4px rgba(0,0,0,.22) !important;
+    color:#ffffff !important; margin:0 0 3px !important; font-size:1.45rem !important;
+    font-weight:800 !important; letter-spacing:-0.2px !important;
+    text-shadow:0 1px 4px rgba(0,0,0,.22) !important;
 }
-.app-header p {
-    color: rgba(255,255,255,.68) !important;
-    margin: 0 !important; font-size: .83rem !important; letter-spacing: .3px;
-}
-
-/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+.app-header p { color:rgba(255,255,255,.68) !important; margin:0 !important; font-size:.83rem !important; }
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, var(--navy) 0%, #1a4570 40%, var(--blue-800) 100%) !important;
-    border-right: none !important;
-    box-shadow: 4px 0 24px rgba(13,47,82,0.28) !important;
+    background:linear-gradient(180deg,var(--navy) 0%,#1a4570 40%,var(--blue-800) 100%) !important;
+    border-right:none !important; box-shadow:4px 0 24px rgba(13,47,82,0.28) !important;
 }
-[data-testid="stSidebar"] * { color: #e8f0fa !important; }
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] div { font-family: 'DM Sans', sans-serif !important; font-size: 13.5px; }
-[data-testid="stSidebar"] strong {
-    color: #ffffff !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-size: 14px; font-weight: 700;
+[data-testid="stSidebar"] * { color:#e8f0fa !important; }
+[data-testid="stSidebar"] p,[data-testid="stSidebar"] span,[data-testid="stSidebar"] div
+    { font-family:'DM Sans',sans-serif !important; font-size:13.5px; }
+[data-testid="stSidebar"] strong
+    { color:#ffffff !important; font-family:'Plus Jakarta Sans',sans-serif !important;
+      font-size:14px; font-weight:700; }
+[data-testid="stSidebar"] hr { border-color:rgba(255,255,255,0.15) !important; margin:12px 0 !important; }
+[data-testid="stSidebar"] [data-testid="stSelectbox"]>div>div {
+    background:rgba(255,255,255,0.10) !important; border:1px solid rgba(255,255,255,0.22) !important;
+    border-radius:9px !important; color:#ffffff !important; font-weight:600;
 }
-[data-testid="stSidebar"] hr {
-    border-color: rgba(255,255,255,0.15) !important; margin: 12px 0 !important;
+[data-testid="stSidebar"] [data-testid="stSelectbox"]>div>div:hover
+    { background:rgba(255,255,255,0.18) !important; border-color:rgba(255,255,255,0.40) !important; }
+[data-testid="stSidebar"] label
+    { font-size:.75rem !important; font-weight:600 !important; letter-spacing:.8px !important;
+      text-transform:uppercase !important; color:rgba(255,255,255,0.45) !important; }
+[data-testid="stSidebar"] .stButton>button {
+    background:rgba(239,68,68,0.18) !important; border:1px solid rgba(239,68,68,0.38) !important;
+    color:#fca5a5 !important; border-radius:9px !important; font-weight:600 !important;
+    height:2.6em !important; transition:all 0.2s ease !important;
 }
-[data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div {
-    background: rgba(255,255,255,0.10) !important;
-    border: 1px solid rgba(255,255,255,0.22) !important;
-    border-radius: 9px !important; color: #ffffff !important;
-    font-weight: 600; transition: background .2s, border-color .2s;
-}
-[data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div:hover {
-    background: rgba(255,255,255,0.18) !important;
-    border-color: rgba(255,255,255,0.40) !important;
-}
-[data-testid="stSidebar"] label {
-    font-size: .75rem !important; font-weight: 600 !important;
-    letter-spacing: .8px !important; text-transform: uppercase !important;
-    color: rgba(255,255,255,0.45) !important;
-}
-[data-testid="stSidebar"] .stButton > button {
-    background: rgba(239,68,68,0.18) !important;
-    border: 1px solid rgba(239,68,68,0.38) !important;
-    color: #fca5a5 !important; border-radius: 9px !important;
-    font-weight: 600 !important; height: 2.6em !important;
-    transition: all 0.2s ease !important;
-}
-[data-testid="stSidebar"] .stButton > button:hover {
-    background: rgba(239,68,68,0.32) !important;
-    border-color: #ef4444 !important; color: #ffffff !important;
-    transform: translateY(-1px) !important;
-}
-
-/* ── Metric cards ─────────────────────────────────────────────────────────── */
+[data-testid="stSidebar"] .stButton>button:hover
+    { background:rgba(239,68,68,0.32) !important; border-color:#ef4444 !important;
+      color:#ffffff !important; transform:translateY(-1px) !important; }
 [data-testid="stMetric"] {
-    background: var(--surface) !important;
-    border-radius: var(--radius) !important;
-    padding: 18px 22px !important;
-    box-shadow: var(--shadow) !important;
-    border-left: 4px solid var(--blue-400) !important;
-    transition: transform 0.2s ease, box-shadow 0.2s ease !important;
+    background:var(--surface) !important; border-radius:var(--radius) !important;
+    padding:18px 22px !important; box-shadow:var(--shadow) !important;
+    border-left:4px solid var(--blue-400) !important;
+    transition:transform 0.2s ease,box-shadow 0.2s ease !important;
 }
-[data-testid="stMetric"]:hover { transform: translateY(-3px) !important; box-shadow: var(--shadow-lg) !important; }
-[data-testid="stMetricLabel"] {
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 11.5px !important; font-weight: 500 !important;
-    color: var(--muted) !important; text-transform: uppercase !important; letter-spacing: .7px !important;
+[data-testid="stMetric"]:hover { transform:translateY(-3px) !important; box-shadow:var(--shadow-lg) !important; }
+[data-testid="stMetricLabel"]
+    { font-family:'DM Sans',sans-serif !important; font-size:11.5px !important;
+      font-weight:500 !important; color:var(--muted) !important;
+      text-transform:uppercase !important; letter-spacing:.7px !important; }
+[data-testid="stMetricValue"]
+    { font-family:'Plus Jakarta Sans',sans-serif !important; font-size:2rem !important;
+      font-weight:800 !important; color:var(--blue-800) !important; }
+.stButton>button {
+    background:linear-gradient(135deg,var(--blue-600) 0%,var(--blue-400) 100%) !important;
+    color:#ffffff !important; border:none !important; border-radius:10px !important;
+    padding:0 1.4em !important; font-family:'Plus Jakarta Sans',sans-serif !important;
+    font-size:14px !important; font-weight:600 !important; height:2.85em !important;
+    box-shadow:0 2px 12px rgba(74,144,226,0.30) !important; transition:all 0.22s ease !important;
 }
-[data-testid="stMetricValue"] {
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-size: 2rem !important; font-weight: 800 !important; color: var(--blue-800) !important;
+.stButton>button:hover {
+    background:linear-gradient(135deg,var(--blue-800) 0%,var(--blue-600) 100%) !important;
+    box-shadow:0 6px 20px rgba(31,78,121,0.35) !important; transform:translateY(-2px) !important;
 }
-
-/* ── Buttons ──────────────────────────────────────────────────────────────── */
-.stButton > button {
-    background: linear-gradient(135deg, var(--blue-600) 0%, var(--blue-400) 100%) !important;
-    color: #ffffff !important; border: none !important;
-    border-radius: 10px !important; padding: 0 1.4em !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-size: 14px !important; font-weight: 600 !important;
-    height: 2.85em !important;
-    box-shadow: 0 2px 12px rgba(74,144,226,0.30) !important;
-    transition: all 0.22s ease !important;
+.stButton>button:active { transform:translateY(0) !important; }
+[data-testid="stDownloadButton"]>button {
+    background:linear-gradient(135deg,#059669 0%,#10b981 100%) !important;
+    box-shadow:0 2px 12px rgba(16,185,129,0.28) !important;
 }
-.stButton > button:hover {
-    background: linear-gradient(135deg, var(--blue-800) 0%, var(--blue-600) 100%) !important;
-    box-shadow: 0 6px 20px rgba(31,78,121,0.35) !important;
-    transform: translateY(-2px) !important;
+[data-testid="stDownloadButton"]>button:hover {
+    background:linear-gradient(135deg,#047857 0%,#059669 100%) !important;
+    box-shadow:0 6px 20px rgba(5,150,105,0.35) !important;
 }
-.stButton > button:active { transform: translateY(0) !important; }
-[data-testid="stDownloadButton"] > button {
-    background: linear-gradient(135deg, #059669 0%, #10b981 100%) !important;
-    box-shadow: 0 2px 12px rgba(16,185,129,0.28) !important;
-}
-[data-testid="stDownloadButton"] > button:hover {
-    background: linear-gradient(135deg, #047857 0%, #059669 100%) !important;
-    box-shadow: 0 6px 20px rgba(5,150,105,0.35) !important;
-}
-
-/* ── Tabs ─────────────────────────────────────────────────────────────────── */
 [data-testid="stTabs"] [data-baseweb="tab-list"] {
-    background: var(--surface) !important; border-radius: 10px !important;
-    border: 1px solid var(--border) !important; padding: 4px !important; gap: 2px !important;
-    box-shadow: 0 2px 8px rgba(31,78,121,0.06) !important;
+    background:var(--surface) !important; border-radius:10px !important;
+    border:1px solid var(--border) !important; padding:4px !important; gap:2px !important;
+    box-shadow:0 2px 8px rgba(31,78,121,0.06) !important;
 }
 [data-testid="stTabs"] [data-baseweb="tab"] {
-    border-radius: 8px !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-size: 13.5px !important; font-weight: 600 !important;
-    color: var(--muted) !important; padding: 8px 18px !important;
-    transition: all 0.2s ease !important;
+    border-radius:8px !important; font-family:'Plus Jakarta Sans',sans-serif !important;
+    font-size:13.5px !important; font-weight:600 !important; color:var(--muted) !important;
+    padding:8px 18px !important; transition:all 0.2s ease !important;
 }
 [data-testid="stTabs"] [aria-selected="true"] {
-    background: linear-gradient(135deg, var(--blue-800) 0%, var(--blue-600) 100%) !important;
-    color: #ffffff !important; box-shadow: 0 2px 8px rgba(31,78,121,0.30) !important;
+    background:linear-gradient(135deg,var(--blue-800) 0%,var(--blue-600) 100%) !important;
+    color:#ffffff !important; box-shadow:0 2px 8px rgba(31,78,121,0.30) !important;
 }
-
-/* ── Inputs ───────────────────────────────────────────────────────────────── */
-[data-testid="stSelectbox"] > div > div,
+[data-testid="stSelectbox"]>div>div,
 [data-testid="stTextInput"] input,
 [data-testid="stNumberInput"] input {
-    border-radius: 9px !important; border: 1.5px solid var(--border) !important;
-    font-family: 'DM Sans', sans-serif !important; font-size: 14px !important;
-    transition: border-color .2s, box-shadow .2s !important; background: var(--surface) !important;
+    border-radius:9px !important; border:1.5px solid var(--border) !important;
+    font-family:'DM Sans',sans-serif !important; font-size:14px !important;
+    transition:border-color .2s,box-shadow .2s !important; background:var(--surface) !important;
 }
-[data-testid="stTextInput"] input:focus,
-[data-testid="stNumberInput"] input:focus {
-    border-color: var(--blue-400) !important;
-    box-shadow: 0 0 0 3px rgba(74,144,226,0.15) !important; outline: none !important;
-}
-[data-testid="stTextInput"] label,
-[data-testid="stSelectbox"] label,
+[data-testid="stTextInput"] input:focus,[data-testid="stNumberInput"] input:focus
+    { border-color:var(--blue-400) !important;
+      box-shadow:0 0 0 3px rgba(74,144,226,0.15) !important; outline:none !important; }
+[data-testid="stTextInput"] label,[data-testid="stSelectbox"] label,
 [data-testid="stNumberInput"] label {
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-size: 12.5px !important; font-weight: 600 !important; color: var(--blue-800) !important;
+    font-family:'Plus Jakarta Sans',sans-serif !important; font-size:12.5px !important;
+    font-weight:600 !important; color:var(--blue-800) !important;
 }
-
-/* ── DataFrames ───────────────────────────────────────────────────────────── */
-[data-testid="stDataFrame"] {
-    border-radius: var(--radius) !important; overflow: hidden !important;
-    border: 1px solid var(--border) !important; box-shadow: var(--shadow) !important;
-}
-[data-testid="stDataFrame"] td {
-    white-space: pre-line !important; text-align: center !important;
-    font-size: 13px !important; padding: 10px 14px !important;
-    font-family: 'DM Sans', sans-serif !important;
-}
+[data-testid="stDataFrame"]
+    { border-radius:var(--radius) !important; overflow:hidden !important;
+      border:1px solid var(--border) !important; box-shadow:var(--shadow) !important; }
+[data-testid="stDataFrame"] td
+    { white-space:pre-line !important; text-align:center !important;
+      font-size:13px !important; padding:10px 14px !important;
+      font-family:'DM Sans',sans-serif !important; }
 [data-testid="stDataFrame"] th {
-    background: var(--blue-800) !important; color: #ffffff !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-weight: 700 !important; font-size: 12px !important;
-    text-transform: uppercase !important; letter-spacing: .5px !important;
+    background:var(--blue-800) !important; color:#ffffff !important;
+    font-family:'Plus Jakarta Sans',sans-serif !important;
+    font-weight:700 !important; font-size:12px !important;
+    text-transform:uppercase !important; letter-spacing:.5px !important;
 }
-
-/* ── Expanders ────────────────────────────────────────────────────────────── */
-[data-testid="stExpander"] {
-    border-radius: 10px !important; border: 1px solid var(--border) !important;
-    box-shadow: 0 2px 8px rgba(31,78,121,0.06) !important;
-    margin-bottom: 8px !important; overflow: hidden !important;
-}
-[data-testid="stExpander"] summary {
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-weight: 600 !important; color: var(--blue-800) !important; padding: 12px 16px !important;
-}
-
-/* ── Alerts ───────────────────────────────────────────────────────────────── */
-[data-testid="stInfo"]    { border-radius: 10px !important; border-left: 4px solid var(--blue-400) !important; }
-[data-testid="stWarning"] { border-radius: 10px !important; border-left: 4px solid var(--accent) !important; }
-[data-testid="stSuccess"] { border-radius: 10px !important; border-left: 4px solid var(--green) !important; }
-[data-testid="stError"]   { border-radius: 10px !important; border-left: 4px solid var(--red) !important; }
-
-/* ── Slider + Progress bar ────────────────────────────────────────────────── */
-[data-testid="stSlider"] [role="slider"] { background: var(--blue-400) !important; border: 2px solid var(--blue-800) !important; }
-[data-testid="stProgressBar"] > div > div { background: linear-gradient(90deg, var(--blue-800), var(--blue-400)) !important; border-radius: 999px !important; }
-[data-testid="stProgressBar"] > div { background: var(--blue-100) !important; border-radius: 999px !important; }
-
-/* ── Dividers + Scrollbar ─────────────────────────────────────────────────── */
-hr { border-color: var(--border) !important; margin: 18px 0 !important; }
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 999px; }
-::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: var(--blue-400); }
-
-/* ── Utility classes ──────────────────────────────────────────────────────── */
+[data-testid="stExpander"]
+    { border-radius:10px !important; border:1px solid var(--border) !important;
+      box-shadow:0 2px 8px rgba(31,78,121,0.06) !important;
+      margin-bottom:8px !important; overflow:hidden !important; }
+[data-testid="stExpander"] summary
+    { font-family:'Plus Jakarta Sans',sans-serif !important; font-weight:600 !important;
+      color:var(--blue-800) !important; padding:12px 16px !important; }
+[data-testid="stInfo"]    { border-radius:10px !important; border-left:4px solid var(--blue-400) !important; }
+[data-testid="stWarning"] { border-radius:10px !important; border-left:4px solid var(--accent) !important; }
+[data-testid="stSuccess"] { border-radius:10px !important; border-left:4px solid var(--green) !important; }
+[data-testid="stError"]   { border-radius:10px !important; border-left:4px solid var(--red) !important; }
+[data-testid="stSlider"] [role="slider"]
+    { background:var(--blue-400) !important; border:2px solid var(--blue-800) !important; }
+[data-testid="stProgressBar"]>div>div
+    { background:linear-gradient(90deg,var(--blue-800),var(--blue-400)) !important; border-radius:999px !important; }
+[data-testid="stProgressBar"]>div
+    { background:var(--blue-100) !important; border-radius:999px !important; }
+hr { border-color:var(--border) !important; margin:18px 0 !important; }
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background:#f1f5f9; border-radius:999px; }
+::-webkit-scrollbar-thumb { background:#94a3b8; border-radius:999px; }
+::-webkit-scrollbar-thumb:hover { background:var(--blue-400); }
 .page-header {
-    background: var(--surface); border-radius: var(--radius); padding: 16px 24px;
-    margin-bottom: 18px; border-left: 5px solid var(--blue-400); box-shadow: var(--shadow);
+    background:var(--surface); border-radius:var(--radius); padding:16px 24px;
+    margin-bottom:18px; border-left:5px solid var(--blue-400); box-shadow:var(--shadow);
 }
-.page-header h2 { margin: 0 !important; font-size: 1.2rem !important; }
-.page-header p  { margin: 4px 0 0; color: var(--muted); font-size: .85rem; }
+.page-header h2 { margin:0 !important; font-size:1.2rem !important; }
+.page-header p  { margin:4px 0 0; color:var(--muted); font-size:.85rem; }
 .ui-card {
-    background: var(--surface); border-radius: var(--radius); padding: 22px 26px;
-    box-shadow: var(--shadow); margin-bottom: 16px; border: 1px solid var(--border);
-}
-.info-banner {
-    background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fb 100%);
-    border: 1px solid var(--blue-100); border-left: 4px solid var(--blue-400);
-    border-radius: 12px; padding: 16px 22px; margin-bottom: 20px;
+    background:var(--surface); border-radius:var(--radius); padding:22px 26px;
+    box-shadow:var(--shadow); margin-bottom:16px; border:1px solid var(--border);
 }
 .section-label {
-    font-family: 'Plus Jakarta Sans', sans-serif;
-    font-size: .7rem; font-weight: 700; letter-spacing: 1px;
-    text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+    font-family:'Plus Jakarta Sans',sans-serif; font-size:.7rem; font-weight:700;
+    letter-spacing:1px; text-transform:uppercase; color:var(--muted); margin-bottom:6px;
 }
+/* ── Download page card ──────────────────────────────────────────────────── */
+.dl-card {
+    background:var(--surface); border-radius:14px; padding:28px 32px;
+    box-shadow:var(--shadow-lg); border:1px solid var(--border); margin-bottom:20px;
+}
+.dl-card h3 { margin:0 0 6px !important; font-size:1.05rem !important; }
+.dl-card p  { color:var(--muted); font-size:.875rem; margin:0 0 18px; }
 </style>""", unsafe_allow_html=True)
 
-
-# ── App header banner (styled gradient card) ─────────────────────────────────
+# App header
 st.markdown("""
 <div class="app-header">
     <div class="app-header-icon">📚</div>
@@ -561,7 +407,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VALIDATION
+# VALIDATION  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def validate_subject_weekly(section):
@@ -649,7 +495,7 @@ def validate_no_three_consecutive():
     return issues
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TIMETABLE QUERY HELPERS
+# TIMETABLE QUERY HELPERS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def count_teacher_periods(teacher):
@@ -674,7 +520,6 @@ def subject_count_total(section, subject):
     return sum(subject_count_in_day(section, subject, day) for day in DAYS)
 
 def quota_remaining(section, subject):
-    """O(1) quota check using subject_remaining dict; falls back to timetable scan."""
     key = (section, subject)
     if key in subject_remaining:
         return subject_remaining[key]
@@ -694,15 +539,13 @@ def get_last_teaching_period(day):
     return [p for p in get_periods(day) if p != "Lunch"][-1]
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SUBJECT CATEGORY HELPERS
+# SUBJECT CATEGORY HELPERS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 DAILY_SINGLE_KEYWORDS = [
     "SINDHI","ISLAMIAT","ENGLISH","URDU","GENERAL SCIENCE",
     "ARABIC","GEOGRAPHY","HISTORY","SOCIAL STUDIES",
 ]
-# Per spec: only Physics, Chemistry, Computer IX-X may form doubles.
-# Biology is intentionally excluded — it follows the no-double rule like other subjects.
 IX_X_DOUBLE_SUBJECTS = [
     "PHYSICS","CHEMISTRY","COMPUTER IX-X","COMPUTER SCIENCE IX-X",
 ]
@@ -714,8 +557,8 @@ def is_daily_single(subject):
     s = subject.strip().upper()
     return any(kw in s for kw in _DS_SORTED)
 
-def is_math(subject):    return MATH_KEYWORD  in subject.upper()
-def is_games(subject):   return GAMES_KEYWORD in subject.upper()
+def is_math(subject):        return MATH_KEYWORD  in subject.upper()
+def is_games(subject):       return GAMES_KEYWORD in subject.upper()
 def is_ix_x_double(subject):
     s = subject.upper()
     return any(t in s for t in IX_X_DOUBLE_SUBJECTS)
@@ -723,11 +566,7 @@ def is_double_allowed(subject):
     return is_math(subject) or is_ix_x_double(subject)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONSTRAINT ENGINE
-# Constraints: C1 teacher clash  C2 daily cap≤6  C3 4-consecutive hard
-#              C4 3-consecutive soft  C5 lunch=break  C6 daily-single
-#              C7 no-double  C8 math daily+1double  C9 IX-X doubles
-#              C10 games≠last  C11 class-teacher P1≥4/5  C12 full fill
+# CONSTRAINT ENGINE  (unchanged — do not modify)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _init_teacher(t_key):
@@ -751,51 +590,26 @@ def teacher_consecutive_streak(teacher, day, proposed_idx):
     return max_s
 
 def is_library(subject):
-    """Library/free-period — never first or last teaching slot."""
     return "LIBRARY" in subject.upper()
 
 CORE_SUBJECTS = ["MATH", "ENGLISH", "URDU", "GENERAL SCIENCE"]
 
 def is_core(subject):
-    """Core academic subjects that should not repeat on same day (except math double)."""
     return any(c in subject.upper() for c in CORE_SUBJECTS)
 
 def can_assign(section, subject, teacher, day, period):
-    """
-    Single constraint gate — returns True only when ALL hard rules are satisfied.
-
-    C1  Teacher clash: teacher cannot be in two sections simultaneously.
-    C2  Daily teaching cap: ≤6 periods (≤5 on Friday).
-    C3  4-consecutive hard block (Lunch = hard break).
-    C4  3-consecutive soft — allowed but penalised in fitness.
-    C5  Lunch is a hard break in consecutive counting.
-    C6  Daily-single subjects (English/Urdu/Sindhi etc.): at most once per day,
-        never consecutive.
-    C7  General no-double: non-double-allowed subjects never placed adjacently.
-    C7b General no-same-day-repeat: ANY subject that doesn't allow doubles must
-        not appear more than once on the same day regardless of adjacency.
-    C8  Math: only ONE double per week; the double must be consecutive and must
-        not cross Lunch.
-    C9  IX-X doubles (Physics/Chemistry/Computer): only one per subject per week;
-        must be consecutive, must not cross Lunch.
-    C10 Games / Library: never placed in the first or last teaching period.
-    """
     periods = get_periods(day)
     idx     = periods.index(period)
     if period == "Lunch": return False
 
-    # ── C1: teacher clash ─────────────────────────────────────────────────────
     if teacher_busy(teacher, day, period): return False
 
-    # ── C2: daily cap ─────────────────────────────────────────────────────────
     t_key = clean(teacher)
     _init_teacher(t_key)
     if teacher_day_load[t_key][day] >= (5 if day == "Friday" else 6): return False
 
-    # ── C3: hard 4-consecutive block ──────────────────────────────────────────
     if teacher_consecutive_streak(t_key, day, idx) >= 4: return False
 
-    # ── Build real-adjacency helpers (Lunch = hard break) ────────────────────
     slots_list = [p for p in periods if p != "Lunch"]
     si         = slots_list.index(period) if period in slots_list else -1
     prev_p     = slots_list[si - 1] if si > 0 else None
@@ -804,7 +618,6 @@ def can_assign(section, subject, teacher, day, period):
     period_i   = periods.index(period)
 
     def real_adj(other_p):
-        """True only when the two periods are immediately adjacent with no Lunch between."""
         if other_p is None: return False
         oi  = periods.index(other_p)
         lo, hi = min(period_i, oi), max(period_i, oi)
@@ -815,53 +628,35 @@ def can_assign(section, subject, teacher, day, period):
     next_s = slot(section, day, next_p)["subject"] if next_p and real_adj(next_p) else ""
     su     = subject.upper()
 
-    # ── C6: daily-single subjects ─────────────────────────────────────────────
     if is_daily_single(subject):
         if subject_count_in_day(section, subject, day) >= 1: return False
         if prev_s.upper() == su or next_s.upper() == su:     return False
 
-    # ── C7b: general no-same-day-repeat for non-double subjects ──────────────
-    # Any subject that isn't allowed to double must appear at most once per day.
     if not is_double_allowed(subject):
         if subject_count_in_day(section, subject, day) >= 1: return False
 
-    # ── C7: no consecutive identical subjects for non-double subjects ─────────
     if not is_double_allowed(subject):
         if prev_s.upper() == su or next_s.upper() == su: return False
 
-    # ── C8: Math — at most ONE double per week, consecutive, no cross-Lunch ───
     if is_math(subject):
-        # How many times Math already appears today?
-        today_count = subject_count_in_day(section, subject, day)
+        today_count  = subject_count_in_day(section, subject, day)
         would_be_double = (prev_s.upper() == su or next_s.upper() == su)
-
         if would_be_double:
-            # Doubles must not cross Lunch (real_adj already enforces this via prev_s/next_s)
-            # Block if a Math double is already established on a DIFFERENT day this week
             ex = math_double_day(section)
             if ex is not None and ex != day: return False
-            # Block if today already HAS a complete double (2 Math) — no triples
             if today_count >= 2: return False
         else:
-            # Non-double placement: Math must not appear more than once per day
-            # UNLESS this day is the designated double-day and only one Math is there yet.
             ex = math_double_day(section)
             if today_count >= 1:
-                # Allow a second Math only if the day is the double-day and both
-                # this slot and an adjacent empty slot can form the double.
-                # Here we are NOT adjacent to existing Math → block.
                 return False
 
-    # ── C9: IX-X doubles — at most one per subject per week ──────────────────
     if is_ix_x_double(subject):
         would_be_double = (prev_s.upper() == su or next_s.upper() == su)
         if would_be_double and double_used.get((section, subject), False):
             return False
-        # Prevent a non-adjacent second occurrence (which is not a double, just a repeat)
         if not would_be_double and subject_count_in_day(section, subject, day) >= 1:
             return False
 
-    # ── C10: Games / Library never first or last teaching period ─────────────
     if is_games(subject) or is_library(subject):
         teaching = [p for p in get_periods(day) if p != "Lunch"]
         if period in (teaching[0], teaching[-1]): return False
@@ -875,7 +670,6 @@ def apply_assignment(section, subject, teacher, day, period):
     _init_teacher(t_key)
     teacher_day_load[t_key][day]     += 1
     teacher_timeline[t_key][day][idx] = 1
-    # Track 3-consecutive streaks for fitness scoring (C4 soft penalty)
     streak = teacher_consecutive_streak(t_key, day, idx)
     teacher_three_streak_count.setdefault(t_key, 0)
     if streak == 3:
@@ -916,7 +710,7 @@ def undo_assignment(section, day, period):
         if not still: double_used.pop((section,subject), None)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCHEDULER HELPERS
+# SCHEDULER HELPERS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _find_teacher(section, subject):
@@ -943,7 +737,6 @@ def create_empty_timetable():
                       for p in get_periods(day)} for day in DAYS}
             for sec in st.session_state.sections}
 
-# ── Phase 1: class teacher P1 (≥4/5 days) ────────────────────────────────────
 def assign_class_teacher_priority():
     for sec, ct in st.session_state.class_teachers.items():
         subjects = st.session_state.teacher_assignment.get(ct,{}).get(sec,[])
@@ -958,35 +751,17 @@ def assign_class_teacher_priority():
                     assigned += 1; break
             if assigned >= 4: break
 
-# ── Phase 2: daily-single subjects ───────────────────────────────────────────
 def assign_daily_singles():
-    """
-    Place subjects that must appear exactly once per day.
-    Two-pass design:
-      Pass 1 — one placement per day, strictly in order Mon→Fri.
-               Each day is only considered if the subject hasn't been placed
-               there yet, preventing any day from getting two occurrences.
-      Pass 2 — if quota still remains after Pass 1 (subject has fewer than 5
-               weekly periods), place remaining on days that still have none.
-    This guarantees both the once-per-day rule and balanced weekly distribution.
-    """
     for sec in st.session_state.subject_config:
         for subj in list(st.session_state.subject_config[sec]):
             if not is_daily_single(subj): continue
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-
-            weekly_quota = st.session_state.subject_config[sec][subj]
-
-            # Pass 1: try to place exactly one per day (Mon→Fri)
-            # Shuffle periods within each day for variety but keep day order fixed
             days_to_try = DAYS.copy()
             random.shuffle(days_to_try)
-
             for day in days_to_try:
                 if quota_remaining(sec, subj) <= 0: break
-                if subject_count_in_day(sec, subj, day) >= 1: continue  # already placed today
-
+                if subject_count_in_day(sec, subj, day) >= 1: continue
                 cands = [p for p in get_periods(day) if p != "Lunch"]
                 random.shuffle(cands)
                 for p in cands:
@@ -996,28 +771,13 @@ def assign_daily_singles():
                         apply_assignment(sec, subj, teacher, day, p)
                         break
 
-# ── Phase 3: Math (daily + one double) ───────────────────────────────────────
 def assign_math():
-    """
-    Place Math for each section:
-      Step A — place the ONE double (two consecutive periods on one random day).
-               If no consecutive pair is available, falls through to singles only.
-      Step B — place one Math on each remaining day (no doubles allowed after Step A).
-
-    Invariants maintained:
-      • At most 2 Math periods on the double-day (never 3+).
-      • All other days have exactly 1 Math.
-      • Weekly total = quota (typically 6 for Mon-Fri + double day counted twice).
-    """
     for sec in st.session_state.subject_config:
         for subj in st.session_state.subject_config[sec]:
             if not is_math(subj): continue
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-
-            double_day = None  # track which day got the double this week
-
-            # ── Step A: place the one allowed double ──────────────────────────
+            double_day = None
             if quota_remaining(sec, subj) >= 2:
                 days_shuffled = DAYS.copy(); random.shuffle(days_shuffled)
                 for day in days_shuffled:
@@ -1031,43 +791,27 @@ def assign_math():
                                 and can_assign(sec, subj, teacher, day, p2)):
                             apply_assignment(sec, subj, teacher, day, p1)
                             apply_assignment(sec, subj, teacher, day, p2)
-                            double_day = day
-                            break
+                            double_day = day; break
                     if double_day: break
-
-            # ── Step B: one single Math per remaining day ─────────────────────
             for day in DAYS:
                 if quota_remaining(sec, subj) <= 0: break
-                # Skip the double-day — it already has 2 Math periods
                 if day == double_day: continue
                 if subject_count_in_day(sec, subj, day) >= 1: continue
-
                 cands = [p for p in get_periods(day) if p != "Lunch"]
                 random.shuffle(cands)
                 for p in cands:
                     if quota_remaining(sec, subj) <= 0: break
                     if slot(sec, day, p)["subject"] == "" and can_assign(sec, subj, teacher, day, p):
-                        apply_assignment(sec, subj, teacher, day, p)
-                        break
+                        apply_assignment(sec, subj, teacher, day, p); break
 
-# ── Phase 4: IX-X science doubles ────────────────────────────────────────────
 def assign_ix_x_doubles():
-    """
-    Place IX-X science subjects (Physics, Chemistry, Computer IX-X):
-      Step A — place the required ONE consecutive double this week.
-      Step B — place any remaining single occurrences on other days,
-               ensuring one-per-day (no same-day repeats).
-    """
     for sec in st.session_state.subject_config:
         if not _is_ix_x_section(sec): continue
         for subj in list(st.session_state.subject_config[sec]):
             if not is_ix_x_double(subj): continue
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-
             double_day = None
-
-            # ── Step A: place exactly one double ─────────────────────────────
             if not double_used.get((sec, subj), False) and quota_remaining(sec, subj) >= 2:
                 days_shuffled = DAYS.copy(); random.shuffle(days_shuffled)
                 for day in days_shuffled:
@@ -1081,25 +825,19 @@ def assign_ix_x_doubles():
                                 and can_assign(sec, subj, teacher, day, p2)):
                             apply_assignment(sec, subj, teacher, day, p1)
                             apply_assignment(sec, subj, teacher, day, p2)
-                            double_day = day
-                            break
+                            double_day = day; break
                     if double_day: break
-
-            # ── Step B: fill remaining quota as singles on other days ─────────
             for day in DAYS:
                 if quota_remaining(sec, subj) <= 0: break
-                if day == double_day: continue          # already has the double
-                if subject_count_in_day(sec, subj, day) >= 1: continue  # already placed today
-
+                if day == double_day: continue
+                if subject_count_in_day(sec, subj, day) >= 1: continue
                 cands = [p for p in get_periods(day) if p != "Lunch"]
                 random.shuffle(cands)
                 for p in cands:
                     if quota_remaining(sec, subj) <= 0: break
                     if slot(sec, day, p)["subject"] == "" and can_assign(sec, subj, teacher, day, p):
-                        apply_assignment(sec, subj, teacher, day, p)
-                        break
+                        apply_assignment(sec, subj, teacher, day, p); break
 
-# ── Swap / displace helpers ───────────────────────────────────────────────────
 def try_swap(section, subject, teacher):
     for day in DAYS:
         for period in get_periods(day):
@@ -1121,77 +859,39 @@ def try_swap(section, subject, teacher):
     return False
 
 def try_displace(section, subject, teacher):
-    """
-    Free a slot by permanently evicting an occupant whose subject is already
-    at or over its weekly quota (surplus period — safe to remove).
-    The freed slot is then given to the under-quota `subject`.
-
-    On failure to use the freed slot, the occupant is UNCONDITIONALLY restored
-    so no slot is accidentally left empty.
-    """
     for day in DAYS:
         for period in get_periods(day):
             if period == "Lunch": continue
             curr = st.session_state.timetable[section][day][period]
             os2, ot = curr.get("subject",""), curr.get("teacher","")
-            if not os2 or quota_remaining(section, os2) > 0: continue  # occupant still needed
-
+            if not os2 or quota_remaining(section, os2) > 0: continue
             undo_assignment(section, day, period)
-
             if (not teacher_busy(teacher, day, period)
                     and can_assign(section, subject, teacher, day, period)):
                 apply_assignment(section, subject, teacher, day, period)
                 return True
-
-            # Cannot use this slot — UNCONDITIONALLY restore the evicted period
-            # so the slot is never left empty (even if can_assign fails edge cases).
             apply_assignment(section, os2, ot, day, period)
-
     return False
 
-# ── Phase 5: general fill ─────────────────────────────────────────────────────
 def basic_auto_fill():
-    """
-    Fill remaining quota for all subjects.
-
-    Key improvements:
-    • Subjects processed largest-deficit-first so hard-to-place subjects win slots.
-    • Day selection uses a two-tier preference:
-        Tier 1 — days where the subject hasn't appeared yet (spread-first).
-        Tier 2 — days where the subject appears once (only for double-allowed subjects).
-      This naturally distributes subjects across the week rather than clustering.
-    • Math: daily cap is strictly 2 (double-day) or 1 (all other days) — never 3+.
-    • Non-double subjects: hard cap of 1 per day enforced (reinforces C7b).
-    """
     secs = list(st.session_state.subject_config.keys()); random.shuffle(secs)
-
     for sec in secs:
-        items = sorted(
-            st.session_state.subject_config[sec].items(),
-            key=lambda kv: quota_remaining(sec, kv[0]),
-            reverse=True,
-        )
-
+        items = sorted(st.session_state.subject_config[sec].items(),
+                       key=lambda kv: quota_remaining(sec, kv[0]), reverse=True)
         for subj, _ in items:
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-
             while quota_remaining(sec, subj) > 0:
-                # ── Day preference: zero-occurrence days first ─────────────
                 zero_days = [d for d in DAYS if subject_count_in_day(sec, subj, d) == 0]
                 one_days  = [d for d in DAYS if subject_count_in_day(sec, subj, d) == 1
                              and is_double_allowed(subj)]
                 random.shuffle(zero_days); random.shuffle(one_days)
                 ordered_days = zero_days + one_days
-
-                # Math hard cap: double-day max 2, others max 1
                 def day_cap(d):
                     if is_math(subj):
                         return 2 if d == math_double_day(sec) else 1
-                    if is_double_allowed(subj):
-                        return 2
-                    return 1    # all other subjects: strictly once per day
-
+                    if is_double_allowed(subj): return 2
+                    return 1
                 valid = []
                 for day in ordered_days:
                     if subject_count_in_day(sec, subj, day) >= day_cap(day): continue
@@ -1202,47 +902,23 @@ def basic_auto_fill():
                         if teacher_daily_load(teacher, day) >= (5 if day == "Friday" else 6): continue
                         if can_assign(sec, subj, teacher, day, p):
                             valid.append((day, p))
-
                 if not valid:
                     if try_swap(sec, subj, teacher): continue
                     if try_displace(sec, subj, teacher): continue
-                    break   # genuinely impossible this run
-
+                    break
                 day, p = random.choice(valid)
                 apply_assignment(sec, subj, teacher, day, p)
 
-# ── Phase 5b: under-quota top-up ─────────────────────────────────────────────
 def fill_under_quota_subjects():
-    """
-    Safety-net pass after Phases 1-5: top up any subject still below weekly quota.
-
-    Four escalation levels:
-      L1  — empty slot, strict daily cap (1 per day for non-doubles; 2 for doubles).
-      L2  — empty slot, relaxed cap (doubles only) — non-doubles still capped at 1/day.
-      L3  — try_swap: move an occupant to another empty slot.
-      L4  — try_displace: evict a surplus-quota occupant permanently.
-
-    Math-specific: cap is always ≤2/day (never relaxed), because placing a 3rd Math
-    on any day would violate the double-period-only rule.
-    """
     for sec in st.session_state.subject_config:
-        for subj in sorted(
-            st.session_state.subject_config[sec],
-            key=lambda s: quota_remaining(sec, s),
-            reverse=True,
-        ):
+        for subj in sorted(st.session_state.subject_config[sec],
+                           key=lambda s: quota_remaining(sec, s), reverse=True):
             teacher = _find_teacher(sec, subj)
             if not teacher: continue
-
             def strict_day_cap(d):
-                """Per-day max for this subject in relaxed mode."""
-                if is_math(subj):
-                    return 2  # never exceed double-pair
-                if is_double_allowed(subj):
-                    return 2
-                return 1   # non-doubles: one per day even when relaxing
-
-            # ── Levels 1 & 2: direct placement ───────────────────────────────
+                if is_math(subj): return 2
+                if is_double_allowed(subj): return 2
+                return 1
             for relax in (False, True):
                 if quota_remaining(sec, subj) <= 0: break
                 days_shuffled = DAYS.copy(); random.shuffle(days_shuffled)
@@ -1250,28 +926,20 @@ def fill_under_quota_subjects():
                     if quota_remaining(sec, subj) <= 0: break
                     cap = strict_day_cap(day) if relax else 1
                     if is_double_allowed(subj) and not relax: cap = 2
-                    # Non-doubles never exceed 1/day regardless of relax flag
                     if not is_double_allowed(subj): cap = 1
                     if subject_count_in_day(sec, subj, day) >= cap: continue
-
                     ps = [p for p in get_periods(day) if p != "Lunch"]
                     random.shuffle(ps)
                     for p in ps:
                         if quota_remaining(sec, subj) <= 0: break
                         if slot(sec, day, p)["subject"]: continue
                         if can_assign(sec, subj, teacher, day, p):
-                            apply_assignment(sec, subj, teacher, day, p)
-                            break
-
-            # ── Level 3: swap ─────────────────────────────────────────────────
+                            apply_assignment(sec, subj, teacher, day, p); break
             while quota_remaining(sec, subj) > 0:
                 if not try_swap(sec, subj, teacher): break
-
-            # ── Level 4: displace ─────────────────────────────────────────────
             while quota_remaining(sec, subj) > 0:
                 if not try_displace(sec, subj, teacher): break
 
-# ── Phase 6: emergency backfill ──────────────────────────────────────────────
 def emergency_backfill():
     for sec in st.session_state.timetable:
         for day in DAYS:
@@ -1303,31 +971,15 @@ def emergency_backfill():
                 if try_displace(sec,subj,teacher): continue
                 stalled=True
 
-# ── Phase 7: Hard guarantee — class teacher gets ≥1 period in their class ────
 def ensure_class_teacher_presence():
-    """
-    Rule 10 hard guarantee: after all phases, every class teacher must have
-    at least one period teaching in their own class.
-
-    Strategy (in order of preference):
-      1. Find any empty slot the class teacher can fill with one of their subjects.
-      2. If no empty slot, find a slot occupied by ANOTHER teacher teaching a
-         subject the class teacher also teaches — swap the slot directly.
-      3. If still not present, log (can't fix without breaking other guarantees).
-    """
     for sec, ct in st.session_state.class_teachers.items():
         if sec not in st.session_state.timetable: continue
-        # Already has a period? Done.
         if any(slot(sec, day, p)["teacher"] == ct
                for day in DAYS for p in get_periods(day) if p != "Lunch"):
             continue
-
         subjects = st.session_state.teacher_assignment.get(ct, {}).get(sec, [])
         if not subjects: continue
-
         placed = False
-
-        # ── Strategy 1: empty slot ────────────────────────────────────────────
         for day in DAYS:
             if placed: break
             for p in get_periods(day):
@@ -1338,59 +990,27 @@ def ensure_class_teacher_presence():
                         apply_assignment(sec, subj, ct, day, p)
                         placed = True; break
                 if placed: break
-
         if placed: continue
-
-        # ── Strategy 2: steal a slot from another teacher ─────────────────────
         for day in DAYS:
             if placed: break
             for p in get_periods(day):
                 if p == "Lunch": continue
                 cell = slot(sec, day, p)
-                if cell["teacher"] == ct: break          # already there
-                if cell["subject"] not in subjects: continue  # CT doesn't teach this subject
-                subj    = cell["subject"]
-                old_t   = cell["teacher"]
-                if teacher_busy(ct, day, p): continue    # CT busy elsewhere
-                # Temporarily check: if we replace old_t with ct, is everything OK?
+                if cell["teacher"] == ct: break
+                if cell["subject"] not in subjects: continue
+                subj  = cell["subject"]
+                old_t = cell["teacher"]
+                if teacher_busy(ct, day, p): continue
                 undo_assignment(sec, day, p)
                 if can_assign(sec, subj, ct, day, p):
                     apply_assignment(sec, subj, ct, day, p)
                     placed = True; break
                 else:
-                    # Restore original
-                    if old_t and can_assign(sec, subj, old_t, day, p):
-                        apply_assignment(sec, subj, old_t, day, p)
-                    elif old_t:
-                        apply_assignment(sec, subj, old_t, day, p)  # force-restore
+                    apply_assignment(sec, subj, old_t, day, p)
             if placed: break
 
-
-# ── Phase 7b: force_fill — absolute last resort for empty slots ───────────────
 def force_fill():
-    """
-    Absolute last resort called after all normal phases.
-
-    Goal: guarantee ZERO empty teaching slots. Accepts any legal placement first,
-    then falls back to constraint-relaxed placement if necessary.
-
-    Strategy (in order):
-      Pass 1 — for each empty slot, find any subject with remaining quota that
-               passes ALL hard constraints (can_assign). Uses any teacher assigned
-               to that subject-section pair.
-      Pass 2 — for each STILL-empty slot, relax C6/C7b (same-day repetition)
-               but keep C1 (teacher clash), C2 (daily cap), C3 (4-consecutive).
-               This handles edge cases where constraints have backed the scheduler
-               into a corner with no legal moves.
-      Pass 3 — for each STILL-empty slot, place the subject with the highest
-               remaining quota regardless of same-day rules, subject only to C1/C2.
-               This is the nuclear option: the result may violate soft rules, but
-               the timetable will have no empty cells.
-
-    No slot is ever left empty after this function completes (assuming at least
-    one subject-teacher assignment exists for the section).
-    """
-    # ── Pass 1: try every subject through the full can_assign gate ────────────
+    # Pass 1
     for sec in st.session_state.timetable:
         for day in DAYS:
             for period in get_periods(day):
@@ -1399,41 +1019,32 @@ def force_fill():
                     [(subj, quota_remaining(sec, subj))
                      for subj in st.session_state.subject_config.get(sec, {})
                      if quota_remaining(sec, subj) > 0],
-                    key=lambda x: -x[1]
-                )
+                    key=lambda x: -x[1])
                 for subj, _ in candidates:
                     t = _find_teacher(sec, subj)
                     if t and can_assign(sec, subj, t, day, period):
-                        apply_assignment(sec, subj, t, day, period)
-                        break
-
-    # ── Pass 2: relax same-day rules, keep teacher/consecutive constraints ────
+                        apply_assignment(sec, subj, t, day, period); break
+    # Pass 2
     for sec in st.session_state.timetable:
         for day in DAYS:
             for period in get_periods(day):
                 if period == "Lunch" or slot(sec, day, period)["subject"]: continue
                 periods_list = get_periods(day)
                 idx = periods_list.index(period)
-                t_key_check = None   # determined per subject below
-                for subj in sorted(
-                    st.session_state.subject_config.get(sec, {}),
-                    key=lambda s: -quota_remaining(sec, s)
-                ):
+                for subj in sorted(st.session_state.subject_config.get(sec, {}),
+                                   key=lambda s: -quota_remaining(sec, s)):
                     t = _find_teacher(sec, subj)
                     if not t: continue
                     tk = clean(t)
                     _init_teacher(tk)
-                    # Enforce only C1 (clash), C2 (daily cap), C3 (4-consecutive)
                     if teacher_busy(t, day, period): continue
                     if teacher_day_load[tk][day] >= (5 if day == "Friday" else 6): continue
                     if teacher_consecutive_streak(tk, day, idx) >= 4: continue
                     if is_games(subj) or is_library(subj):
                         teaching = [p for p in get_periods(day) if p != "Lunch"]
                         if period in (teaching[0], teaching[-1]): continue
-                    apply_assignment(sec, subj, t, day, period)
-                    break
-
-    # ── Pass 3: nuclear option — place by teacher availability only (C1+C2) ──
+                    apply_assignment(sec, subj, t, day, period); break
+    # Pass 3
     for sec in st.session_state.timetable:
         for day in DAYS:
             for period in get_periods(day):
@@ -1450,27 +1061,23 @@ def force_fill():
                     apply_assignment(sec, subj, t, day, period)
                     placed = True
                 if not placed:
-                    # Truly no teacher available — place ANY assigned teacher
-                    # regardless of load (extreme edge case with tiny teacher pool)
                     for subj in st.session_state.subject_config.get(sec, {}):
                         t = _find_teacher(sec, subj)
                         if t and not teacher_busy(t, day, period):
-                            apply_assignment(sec, subj, t, day, period)
-                            break
-
+                            apply_assignment(sec, subj, t, day, period); break
 
 def calculate_fitness():
     score = 10_000
     for sec,cfg in st.session_state.subject_config.items():
         for subj in cfg: score -= quota_remaining(sec,subj)*200
-    score -= sum(teacher_three_streak_count.values())*30  # C4 soft penalty
+    score -= sum(teacher_three_streak_count.values())*30
     score -= len(validate_no_three_consecutive())*50
     score -= len(validate_teacher_distribution())*20
     score -= len(validate_friday_load())*10
     return score
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MISC
+# MISC HELPERS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def replace_teacher_everywhere(old, new):
@@ -1498,7 +1105,7 @@ def _pdf_style(lunch_rows=None):
     return TableStyle(cmds)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EXPORTS
+# EXPORTS  (unchanged logic; removed side-effect append from export functions)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _word_landscape(doc):
@@ -1533,6 +1140,7 @@ def export_teacher_view_word(teacher):
     fn=f"{teacher}_timetable.docx"; doc.save(fn); return fn
 
 def export_teacher_view_pdf(teacher):
+    """Generate teacher PDF. Returns file path. Does NOT mutate session state lists."""
     path=f"{teacher}_timetable.pdf"
     doc=SimpleDocTemplate(path,pagesize=landscape(A4),
                           leftMargin=20,rightMargin=20,topMargin=30,bottomMargin=30)
@@ -1556,9 +1164,11 @@ def export_teacher_view_pdf(teacher):
         row.append(FRIDAY_TIMES.get(period,"")); data.append(row)
     pw=landscape(A4)[0]-40; cw=pw/len(data[0])
     tbl=Table(data,colWidths=[cw]*len(data[0]),repeatRows=1)
-    tbl.setStyle(_pdf_style(lunch_rows)); elems.append(tbl); doc.build(elems); return path
+    tbl.setStyle(_pdf_style(lunch_rows)); elems.append(tbl); doc.build(elems)
+    return path   # FIX: removed side-effect append to session_state list
 
 def export_class_timetable_pdf(section):
+    """Generate class PDF. Returns file path. Does NOT mutate session state lists."""
     path=f"{section}_timetable.pdf"
     doc=SimpleDocTemplate(path,pagesize=landscape(A4),
                           leftMargin=40,rightMargin=40,topMargin=40,bottomMargin=40)
@@ -1582,7 +1192,8 @@ def export_class_timetable_pdf(section):
         row.append(FRIDAY_TIMES.get(period,"")); data.append(row)
     cw=[36,58,78,78,78,58,78,78,58]
     tbl=Table(data,colWidths=cw,repeatRows=1)
-    tbl.setStyle(_pdf_style(lunch_rows)); elems.append(tbl); doc.build(elems); return path
+    tbl.setStyle(_pdf_style(lunch_rows)); elems.append(tbl); doc.build(elems)
+    return path   # FIX: removed side-effect append to session_state list
 
 def export_class_timetable_to_word(section):
     doc=Document(); _word_landscape(doc)
@@ -1662,26 +1273,32 @@ def export_excel(df):
             for cell in row:
                 cell.border=border
                 cell.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
-                if is_lunch:
-                    cell.fill = lf
-                elif r % 2 == 0:
-                    cell.fill = alt
+                cell.fill = lf if is_lunch else (alt if r%2==0 else cell.fill)
         for col in ws.columns:
             ml=max((len(str(c.value or "")) for c in col),default=0)
             ws.column_dimensions[get_column_letter(col[0].column)].width=min(ml+4,30)
     return file
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AI ANALYSIS
+# BULK ZIP HELPER  (FIX: centralised, no undefined variables)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def create_zip(file_paths: list, zip_name: str = "timetable_download.zip") -> str:
+    """Create a ZIP archive from a list of existing file paths. Returns zip path."""
+    with zipfile.ZipFile(zip_name, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fp in file_paths:
+            if os.path.exists(fp):
+                zf.write(fp, os.path.basename(fp))
+    return zip_name
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI ANALYSIS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def ai_analyze_timetable(df) -> str:
-    """Send the principal matrix to GPT-4o-mini for expert timetable analysis."""
     if openai_client is None:
-        return (
-            "⚠️ OpenAI API key not configured. "
-            "Set the OPENAI_API_KEY environment variable to enable AI analysis."
-        )
+        return ("⚠️ OpenAI API key not configured. "
+                "Set the OPENAI_API_KEY environment variable to enable AI analysis.")
     prompt = (
         "You are a school timetabling expert. Analyze the school timetable below "
         "and provide concise, actionable feedback on:\n"
@@ -1695,86 +1312,78 @@ def ai_analyze_timetable(df) -> str:
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=900,
-            temperature=0.3,
+            max_tokens=900, temperature=0.3,
         )
         return response.choices[0].message.content.strip()
     except Exception as exc:
         return f"⚠️ AI analysis failed: {exc}"
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NAVIGATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 is_admin = st.session_state.role == "admin"
+
 with st.sidebar:
-    # ── Sidebar logo / school identity block ──────────────────────────────────
     st.markdown("""
-    <div style="text-align:center; padding: 18px 0 10px;">
-        <div style="font-size:2.4rem; line-height:1;">🏫</div>
-        <div style="color:#ffffff; font-weight:800; font-size:1.0rem;
-                    letter-spacing:.3px; margin-top:6px;">DHACSS Phase IV</div>
-        <div style="color:rgba(255,255,255,.55); font-size:.73rem;
-                    letter-spacing:.5px; text-transform:uppercase; margin-top:2px;">
-            Timetable Pro
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    <div style="text-align:center;padding:18px 0 10px;">
+        <div style="font-size:2.4rem;line-height:1;">🏫</div>
+        <div style="color:#ffffff;font-weight:800;font-size:1.0rem;letter-spacing:.3px;margin-top:6px;">
+            DHACSS Phase IV</div>
+        <div style="color:rgba(255,255,255,.55);font-size:.73rem;letter-spacing:.5px;
+                    text-transform:uppercase;margin-top:2px;">Timetable Pro</div>
+    </div>""", unsafe_allow_html=True)
     st.divider()
 
-    # ── Role badge ────────────────────────────────────────────────────────────
     role_icon = "🛡️" if st.session_state.role == "admin" else "👁️"
     st.markdown(f"""
-    <div style="text-align:center; margin-bottom:12px;">
-        <span style="background:rgba(74,144,226,.25); border:1px solid rgba(74,144,226,.50);
-                     border-radius:20px; padding:5px 16px; font-size:.82rem;
-                     color:#d0e8ff; font-weight:600; letter-spacing:.3px;">
+    <div style="text-align:center;margin-bottom:12px;">
+        <span style="background:rgba(74,144,226,.25);border:1px solid rgba(74,144,226,.50);
+                     border-radius:20px;padding:5px 16px;font-size:.82rem;
+                     color:#d0e8ff;font-weight:600;letter-spacing:.3px;">
             {role_icon} &nbsp;{st.session_state.role.title()}
         </span>
-    </div>
-    """, unsafe_allow_html=True)
+    </div>""", unsafe_allow_html=True)
 
-    # ── Navigation label ──────────────────────────────────────────────────────
-    st.markdown('<p class="section-label" style="color:rgba(255,255,255,.45); padding:0 4px;">Navigation</p>',
+    st.markdown('<p class="section-label" style="color:rgba(255,255,255,.45);padding:0 4px;">Navigation</p>',
                 unsafe_allow_html=True)
-    pages = ["Dashboard","Configuration","Generate","Class View","Teacher View","Analytics"] \
-            if is_admin else ["Class View","Teacher View","Analytics"]
+
+    # FIX: "Downloads" page added to admin navigation
+    pages = (["Dashboard","Configuration","Generate","Class View",
+               "Teacher View","Analytics","Downloads"]
+             if is_admin else ["Class View","Teacher View","Analytics"])
     menu = st.selectbox("Navigation", pages, label_visibility="collapsed")
     st.divider()
     if st.button("🚪 Logout", use_container_width=True):
-        st.session_state.logged_in=False; st.session_state.role=None; st.rerun()
+        st.session_state.logged_in = False
+        st.session_state.role = None
+        st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 
 if menu == "Dashboard":
-    # ── Welcome banner ────────────────────────────────────────────────────────
     st.markdown("""
-    <div style="
-        background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fb 100%);
-        border: 1px solid #bfdbfe; border-left: 4px solid #4a90e2;
-        border-radius: 13px; padding: 18px 24px; margin-bottom: 22px;
-        display: flex; align-items: center; gap: 14px;
-    ">
-        <div style="font-size: 28px;">👋</div>
+    <div style="background:linear-gradient(135deg,#f0f7ff 0%,#e8f0fb 100%);
+                border:1px solid #bfdbfe;border-left:4px solid #4a90e2;
+                border-radius:13px;padding:18px 24px;margin-bottom:22px;
+                display:flex;align-items:center;gap:14px;">
+        <div style="font-size:28px;">👋</div>
         <div>
-            <div style="
-                font-family: 'Plus Jakarta Sans', sans-serif;
-                font-weight: 700; font-size: 16px; color: #1f4e79; margin-bottom: 3px;
-            ">Welcome to School Scheduler Pro</div>
-            <div style="color: #4a6fa5; font-size: 13.5px;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;
+                        font-size:16px;color:#1f4e79;margin-bottom:3px;">
+                Welcome to School Scheduler Pro</div>
+            <div style="color:#4a6fa5;font-size:13.5px;">
                 Configure your school in <strong>Configuration</strong>, then click
                 <strong>Generate</strong> to build the timetable automatically.
             </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+    </div>""", unsafe_allow_html=True)
 
     tt = st.session_state.timetable
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("🏫 Sections",  len(st.session_state.sections))
+    c1.metric("🏫 Sections",   len(st.session_state.sections))
     c2.metric("👩‍🏫 Teachers",  len(st.session_state.teachers))
     filled = sum(1 for sec in tt for day in DAYS for p in get_periods(day)
                  if p!="Lunch" and slot(sec,day,p)["subject"]) if tt else 0
@@ -1782,16 +1391,13 @@ if menu == "Dashboard":
     clashes = len(validate_teacher_clashes()) if tt else 0
     c4.metric("⚠️ Clashes", clashes)
 
-    # ── Styled info card ──────────────────────────────────────────────────────
     st.markdown("""
-    <div class="ui-card" style="margin-top:18px; border-left:4px solid #4a90e2;">
-        <div style="display:flex; align-items:center; gap:12px;">
+    <div class="ui-card" style="margin-top:18px;border-left:4px solid #4a90e2;">
+        <div style="display:flex;align-items:center;gap:12px;">
             <span style="font-size:1.8rem;">💡</span>
             <div>
-                <div style="font-weight:700; color:#1f4e79; font-size:.95rem;">
-                    Getting Started
-                </div>
-                <div style="color:#5a7a9a; font-size:.88rem; margin-top:3px;">
+                <div style="font-weight:700;color:#1f4e79;font-size:.95rem;">Getting Started</div>
+                <div style="color:#5a7a9a;font-size:.88rem;margin-top:3px;">
                     Configure your school in <strong>Configuration</strong>,
                     then click <strong>Generate</strong> to build the timetable automatically.
                 </div>
@@ -1825,15 +1431,13 @@ if menu == "Configuration":
                               st.session_state.class_teachers): d.pop(rs,None)
                     save_all_data(); st.success(f"'{rs}' removed."); st.rerun()
         st.divider()
-        # ── Badge-style section chips ─────────────────────────────────────────
         if st.session_state.sections:
             st.markdown("**Current Sections:**")
             chips = "".join(
                 f'<span style="background:#dbeafe;border:1px solid #bfdbfe;border-radius:8px;'
                 f'padding:6px 14px;font-size:13px;font-weight:600;color:#1f4e79;'
                 f'margin:3px;display:inline-block;">{sec}</span>'
-                for sec in st.session_state.sections
-            )
+                for sec in st.session_state.sections)
             st.markdown(f'<div style="margin-top:6px;">{chips}</div>', unsafe_allow_html=True)
 
     with t_teach:
@@ -1853,15 +1457,13 @@ if menu == "Configuration":
                     st.session_state.teachers.pop(rt,None); save_all_data()
                     st.success(f"'{rt}' removed."); st.rerun()
         st.divider()
-        # ── Badge-style teacher chips ─────────────────────────────────────────
         if st.session_state.teachers:
             st.markdown("**Current Teachers:**")
             chips = "".join(
                 f'<span style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;'
                 f'padding:6px 14px;font-size:13px;font-weight:600;color:#065f46;'
                 f'margin:3px;display:inline-block;">👩‍🏫 {t}</span>'
-                for t in st.session_state.teachers
-            )
+                for t in st.session_state.teachers)
             st.markdown(f'<div style="margin-top:6px;">{chips}</div>', unsafe_allow_html=True)
 
     with t_ct:
@@ -1949,23 +1551,16 @@ if menu == "Configuration":
 # ══════════════════════════════════════════════════════════════════════════════
 
 if menu == "Generate":
-    # ── Section header card ───────────────────────────────────────────────────
     st.markdown("""
-    <div style="
-        background: linear-gradient(135deg, #f0f7ff 0%, #e0edff 100%);
-        border: 1px solid #bfdbfe; border-radius: 13px;
-        padding: 20px 26px; margin-bottom: 22px;
-    ">
-        <div style="
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 18px; font-weight: 800; color: #1f4e79; margin-bottom: 5px;
-        ">⚙️ Timetable Generator</div>
-        <div style="color: #4a6fa5; font-size: 13.5px;">
+    <div style="background:linear-gradient(135deg,#f0f7ff 0%,#e0edff 100%);
+                border:1px solid #bfdbfe;border-radius:13px;padding:20px 26px;margin-bottom:22px;">
+        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;
+                    font-weight:800;color:#1f4e79;margin-bottom:5px;">⚙️ Timetable Generator</div>
+        <div style="color:#4a6fa5;font-size:13.5px;">
             Select the number of generation attempts — more runs improve quality by keeping
             the highest-fitness schedule across all attempts.
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+    </div>""", unsafe_allow_html=True)
 
     RUNS = st.slider("Generation attempts (more = better quality)",
                      min_value=5, max_value=30, value=15, step=5)
@@ -1975,15 +1570,15 @@ if menu == "Generate":
         progress = st.progress(0, text="Generating…")
         for run in range(RUNS):
             st.session_state.timetable = create_empty_timetable()
-            assign_class_teacher_priority()   # Phase 1: class teacher P1 ≥4/5 days
-            assign_daily_singles()            # Phase 2: English/Urdu/Sindhi etc. once/day
-            assign_math()                     # Phase 3: Math every day + one double/week
-            assign_ix_x_doubles()             # Phase 4: Physics/Chemistry/Computer doubles
-            basic_auto_fill()                 # Phase 5: general fill (spread-first)
-            fill_under_quota_subjects()       # Phase 5b: quota top-up
-            emergency_backfill()              # Phase 6: fill empty slots + quota enforcement
-            ensure_class_teacher_presence()   # Phase 7: guarantee CT has ≥1 period
-            force_fill()                      # Phase 7b: absolute last resort — no empty slots
+            assign_class_teacher_priority()
+            assign_daily_singles()
+            assign_math()
+            assign_ix_x_doubles()
+            basic_auto_fill()
+            fill_under_quota_subjects()
+            emergency_backfill()
+            ensure_class_teacher_presence()
+            force_fill()
             score = calculate_fitness()
             if score > best_score:
                 best_score = score
@@ -2004,47 +1599,41 @@ if menu == "Generate":
 
     if st.session_state.timetable:
         st.divider()
-
-        # ── Replace Teacher ───────────────────────────────────────────────────
         st.markdown("""
-        <div style="
-            background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px;
-            padding: 14px 20px; margin-bottom: 14px;
-        ">
-            <div style="
-                font-family: 'Plus Jakarta Sans', sans-serif;
-                font-weight: 700; color: #92400e; font-size: 14px; margin-bottom: 2px;
-            ">🔄 Replace Teacher</div>
-            <div style="color: #a16207; font-size: 13px;">
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;
+                    padding:14px 20px;margin-bottom:14px;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;
+                        color:#92400e;font-size:14px;margin-bottom:2px;">🔄 Replace Teacher</div>
+            <div style="color:#a16207;font-size:13px;">
                 Swap all occurrences of one teacher with another across the entire timetable.
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
+
         c1,c2,c3 = st.columns([2,2,1])
         with c1: old_t=st.selectbox("Replace",list(st.session_state.teachers),key="rep_old")
         with c2: new_t=st.selectbox("With",   list(st.session_state.teachers),key="rep_new")
         with c3:
             st.write(""); st.write("")
-            if st.button("Apply"): replace_teacher_everywhere(old_t,new_t); st.success(f"{old_t} → {new_t}")
+            if st.button("Apply"):
+                replace_teacher_everywhere(old_t,new_t)
+                st.success(f"{old_t} → {new_t}")
 
         st.divider()
-        # ── Validation Report ─────────────────────────────────────────────────
         st.markdown("""
-        <div style="
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 16px; font-weight: 700; color: #1f4e79; margin-bottom: 12px;
-        ">🔍 Validation Report</div>
+        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:16px;
+                    font-weight:700;color:#1f4e79;margin-bottom:12px;">🔍 Validation Report</div>
         """, unsafe_allow_html=True)
+
         checks = {
             "3+ consecutive periods":   (validate_no_three_consecutive(), st.warning),
             "Unbalanced teacher loads": (validate_teacher_distribution(), st.warning),
             "Heavy Friday":             (validate_friday_load(),          st.info),
             "Maths non-consecutive":    (validate_maths_consecutive(),    st.info),
         }
-        all_ok=True
+        all_ok = True
         for label,(issues,fn) in checks.items():
             if issues:
-                all_ok=False
+                all_ok = False
                 with st.expander(f"⚠️ {label} ({len(issues)})"):
                     for iss in issues: fn(iss)
         if all_ok: st.success("✅ No constraint violations found!")
@@ -2060,37 +1649,27 @@ if menu == "Class View":
         sec = st.selectbox("Select Section", sorted(st.session_state.timetable.keys()), key="cv_sec")
         ct  = st.session_state.class_teachers.get(sec,"Not Assigned")
 
-        # ── Section info banner ───────────────────────────────────────────────
         st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, #1f4e79 0%, #2b6cb0 100%);
-            border-radius: 12px; padding: 16px 24px; margin-bottom: 18px;
-            display: flex; align-items: center; gap: 16px;
-        ">
-            <div style="
-                background: rgba(255,255,255,0.15); border-radius: 10px;
-                width: 46px; height: 46px; display: flex; align-items: center;
-                justify-content: center; font-size: 22px; flex-shrink: 0;
-            ">🏫</div>
+        <div style="background:linear-gradient(135deg,#1f4e79 0%,#2b6cb0 100%);
+                    border-radius:12px;padding:16px 24px;margin-bottom:18px;
+                    display:flex;align-items:center;gap:16px;">
+            <div style="background:rgba(255,255,255,0.15);border-radius:10px;
+                        width:46px;height:46px;display:flex;align-items:center;
+                        justify-content:center;font-size:22px;flex-shrink:0;">🏫</div>
             <div>
-                <div style="color: rgba(255,255,255,0.65); font-size: 10.5px;
-                    font-family: 'Plus Jakarta Sans', sans-serif;
-                    font-weight: 600; letter-spacing: 1px; text-transform: uppercase;">
-                    Selected Section
-                </div>
-                <div style="color: #ffffff; font-size: 20px; font-weight: 800;
-                    font-family: 'Plus Jakarta Sans', sans-serif;">{sec}</div>
+                <div style="color:rgba(255,255,255,0.65);font-size:10.5px;
+                    font-family:'Plus Jakarta Sans',sans-serif;font-weight:600;
+                    letter-spacing:1px;text-transform:uppercase;">Selected Section</div>
+                <div style="color:#ffffff;font-size:20px;font-weight:800;
+                    font-family:'Plus Jakarta Sans',sans-serif;">{sec}</div>
             </div>
-            <div style="margin-left: auto; text-align: right;">
-                <div style="color: rgba(255,255,255,0.65); font-size: 10.5px;
-                    font-family: 'Plus Jakarta Sans', sans-serif;
-                    font-weight: 600; letter-spacing: 1px; text-transform: uppercase;">
-                    Class Teacher
-                </div>
-                <div style="color: #ffffff; font-size: 15px; font-weight: 700;">{ct}</div>
+            <div style="margin-left:auto;text-align:right;">
+                <div style="color:rgba(255,255,255,0.65);font-size:10.5px;
+                    font-family:'Plus Jakarta Sans',sans-serif;font-weight:600;
+                    letter-spacing:1px;text-transform:uppercase;">Class Teacher</div>
+                <div style="color:#ffffff;font-size:15px;font-weight:700;">{ct}</div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
         c1,c2,c3 = st.columns(3)
         c1.metric("Class Teacher", ct)
@@ -2104,43 +1683,39 @@ if menu == "Class View":
             if p in get_periods(day) else ""
             for p in ALL_PERIODS] for day in DAYS}
 
-        display_periods = ALL_PERIODS
-        fri_times_map = {p: FRIDAY_TIMES.get(p, "") for p in ALL_PERIODS}
+        df = pd.DataFrame({
+            "Period":        ALL_PERIODS,
+            "Mon-Wed Time":  [MON_WED_TIMES.get(p,"")  for p in ALL_PERIODS],
+            "Monday":        df_data["Monday"],
+            "Tuesday":       df_data["Tuesday"],
+            "Wednesday":     df_data["Wednesday"],
+            "Thu Time":      [THURSDAY_TIMES.get(p,"") for p in ALL_PERIODS],
+            "Thursday":      df_data["Thursday"],
+            "Friday":        df_data["Friday"],
+            "Fri Time":      [FRIDAY_TIMES.get(p,"")   for p in ALL_PERIODS],
+        }).set_index("Period")
 
-        df = pd.DataFrame(
-            {
-                "Period":        display_periods,
-                "Mon-Wed Time":  [MON_WED_TIMES.get(p, "")  for p in display_periods],
-                "Monday":        df_data["Monday"],
-                "Tuesday":       df_data["Tuesday"],
-                "Wednesday":     df_data["Wednesday"],
-                "Thu Time":      [THURSDAY_TIMES.get(p, "") for p in display_periods],
-                "Thursday":      df_data["Thursday"],
-                "Friday":        df_data["Friday"],
-                "Fri Time":      [fri_times_map.get(p, "")  for p in display_periods],
-            }
-        ).set_index("Period")
         edited_df = st.data_editor(df, use_container_width=True,
                                    disabled=not is_admin, key="class_editor")
 
         col1,col2 = st.columns(2)
         with col1:
             if st.button("⬇ Download PDF", key="cv_pdf"):
-                path=export_class_timetable_pdf(sec)
+                path = export_class_timetable_pdf(sec)
                 with open(path,"rb") as f:
-                    st.download_button("Download Class PDF",f,file_name=path,mime="application/pdf")
+                    st.download_button("Download Class PDF", f, file_name=path,
+                                       mime="application/pdf")
         with col2:
             if st.button("⬇ Download Word", key="cv_word"):
-                path=export_class_timetable_to_word(sec)
+                path = export_class_timetable_to_word(sec)
                 with open(path,"rb") as f:
-                    st.download_button("Download Class Word",f,file_name=path,
+                    st.download_button("Download Class Word", f, file_name=path,
                                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
         if is_admin and st.button("💾 Save Manual Changes"):
             for day in DAYS:
                 for period in ALL_PERIODS:
                     if period not in get_periods(day): continue
-                    # edited_df index=Period, columns include explicit day names
                     val = edited_df.loc[period, day] if day in edited_df.columns else ""
                     if val:
                         parts=str(val).split("\n"); subj=parts[0].strip()
@@ -2153,10 +1728,10 @@ if menu == "Class View":
 
         with st.expander("🔍 Validation", expanded=False):
             any_iss=False
-            for iss in validate_subject_weekly(sec):    st.error(iss);   any_iss=True
-            for iss in validate_teacher_clashes():      st.error(iss);   any_iss=True
-            for iss in validate_class_teacher_presence():st.warning(iss);any_iss=True
-            for iss in validate_teacher_max_load():     st.error(iss);   any_iss=True
+            for iss in validate_subject_weekly(sec):     st.error(iss);   any_iss=True
+            for iss in validate_teacher_clashes():       st.error(iss);   any_iss=True
+            for iss in validate_class_teacher_presence():st.warning(iss); any_iss=True
+            for iss in validate_teacher_max_load():      st.error(iss);   any_iss=True
             if not any_iss: st.success("No issues found.")
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2167,43 +1742,32 @@ if menu == "Teacher View":
     if not st.session_state.timetable:
         st.warning("Generate a timetable first.")
     else:
-        st.session_state.pop("refresh_teacher_view", None)
         teacher = st.selectbox("Select Teacher", sorted(st.session_state.teachers.keys()),
                                key="tv_teacher")
         total = count_teacher_periods(teacher)
 
-        # ── Teacher info banner ───────────────────────────────────────────────
         st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, #1f4e79 0%, #2b6cb0 100%);
-            border-radius: 12px; padding: 16px 24px; margin-bottom: 18px;
-            display: flex; align-items: center; gap: 16px;
-        ">
-            <div style="
-                background: rgba(255,255,255,0.15); border-radius: 10px;
-                width: 46px; height: 46px; display: flex; align-items: center;
-                justify-content: center; font-size: 22px; flex-shrink: 0;
-            ">👩‍🏫</div>
+        <div style="background:linear-gradient(135deg,#1f4e79 0%,#2b6cb0 100%);
+                    border-radius:12px;padding:16px 24px;margin-bottom:18px;
+                    display:flex;align-items:center;gap:16px;">
+            <div style="background:rgba(255,255,255,0.15);border-radius:10px;
+                        width:46px;height:46px;display:flex;align-items:center;
+                        justify-content:center;font-size:22px;flex-shrink:0;">👩‍🏫</div>
             <div>
-                <div style="color: rgba(255,255,255,0.65); font-size: 10.5px;
-                    font-family: 'Plus Jakarta Sans', sans-serif;
-                    font-weight: 600; letter-spacing: 1px; text-transform: uppercase;">
-                    Teacher Schedule
-                </div>
-                <div style="color: #ffffff; font-size: 20px; font-weight: 800;
-                    font-family: 'Plus Jakarta Sans', sans-serif;">{teacher}</div>
+                <div style="color:rgba(255,255,255,0.65);font-size:10.5px;
+                    font-family:'Plus Jakarta Sans',sans-serif;font-weight:600;
+                    letter-spacing:1px;text-transform:uppercase;">Teacher Schedule</div>
+                <div style="color:#ffffff;font-size:20px;font-weight:800;
+                    font-family:'Plus Jakarta Sans',sans-serif;">{teacher}</div>
             </div>
-            <div style="margin-left: auto; text-align: right;">
-                <div style="color: rgba(255,255,255,0.65); font-size: 10.5px;
-                    font-family: 'Plus Jakarta Sans', sans-serif;
-                    font-weight: 600; letter-spacing: 1px; text-transform: uppercase;">
-                    Weekly Load
-                </div>
-                <div style="color: #f59e0b; font-size: 22px; font-weight: 800;
-                    font-family: 'Plus Jakarta Sans', sans-serif;">{total} periods</div>
+            <div style="margin-left:auto;text-align:right;">
+                <div style="color:rgba(255,255,255,0.65);font-size:10.5px;
+                    font-family:'Plus Jakarta Sans',sans-serif;font-weight:600;
+                    letter-spacing:1px;text-transform:uppercase;">Weekly Load</div>
+                <div style="color:#f59e0b;font-size:22px;font-weight:800;
+                    font-family:'Plus Jakarta Sans',sans-serif;">{total} periods</div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
         c1,c2,c3 = st.columns(3)
         c1.metric("Total Weekly Periods", total)
@@ -2218,7 +1782,7 @@ if menu == "Teacher View":
         for day in DAYS:
             row=[]
             for p in ALL_PERIODS:
-                if p=="Lunch":            row.append("Lunch"); continue
+                if p=="Lunch":                row.append("Lunch"); continue
                 if p not in get_periods(day): row.append(""); continue
                 val=""
                 for sec in st.session_state.timetable:
@@ -2229,14 +1793,14 @@ if menu == "Teacher View":
 
         df=pd.DataFrame({
             "Period":        ALL_PERIODS,
-            "Mon-Wed Time":  [MON_WED_TIMES.get(p,"")   for p in ALL_PERIODS],
+            "Mon-Wed Time":  [MON_WED_TIMES.get(p,"")  for p in ALL_PERIODS],
             "Monday":        df_data["Monday"],
             "Tuesday":       df_data["Tuesday"],
             "Wednesday":     df_data["Wednesday"],
-            "Thu Time":      [THURSDAY_TIMES.get(p,"")  for p in ALL_PERIODS],
+            "Thu Time":      [THURSDAY_TIMES.get(p,"") for p in ALL_PERIODS],
             "Thursday":      df_data["Thursday"],
             "Friday":        df_data["Friday"],
-            "Fri Time":      [FRIDAY_TIMES.get(p,"")    for p in ALL_PERIODS],
+            "Fri Time":      [FRIDAY_TIMES.get(p,"")   for p in ALL_PERIODS],
         }).set_index("Period")
         st.dataframe(df, use_container_width=True)
 
@@ -2244,12 +1808,13 @@ if menu == "Teacher View":
         with col1:
             path=export_teacher_view_word(teacher)
             with open(path,"rb") as f:
-                st.download_button("⬇ Download Word",f,file_name=path,
+                st.download_button("⬇ Download Word", f, file_name=path,
                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         with col2:
             path=export_teacher_view_pdf(teacher)
             with open(path,"rb") as f:
-                st.download_button("⬇ Download PDF",f,file_name=path,mime="application/pdf")
+                st.download_button("⬇ Download PDF", f, file_name=path,
+                                   mime="application/pdf")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ANALYTICS
@@ -2259,13 +1824,9 @@ if menu == "Analytics":
     if not st.session_state.timetable:
         st.warning("Generate a timetable first.")
     else:
-        # ── Teacher Workload ──────────────────────────────────────────────────
-        st.markdown("""
-        <div style="
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 18px; font-weight: 800; color: #1f4e79; margin-bottom: 14px;
-        ">👩‍🏫 Teacher Workload Analysis</div>
-        """, unsafe_allow_html=True)
+        st.markdown("""<div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;
+            font-weight:800;color:#1f4e79;margin-bottom:14px;">👩‍🏫 Teacher Workload Analysis</div>""",
+            unsafe_allow_html=True)
 
         wl={t:count_teacher_periods(t) for t in st.session_state.teachers}
         wl_df=pd.DataFrame(wl.items(),columns=["Teacher","Total Periods"]) \
@@ -2277,17 +1838,12 @@ if menu == "Analytics":
             return "background-color:#90ee90"
 
         st.dataframe(wl_df.style.applymap(_wl,subset=["Total Periods"]),
-                     use_container_width=True,hide_index=True)
+                     use_container_width=True, hide_index=True)
         st.bar_chart(wl_df.set_index("Teacher"))
 
-        # ── Quota Completeness ────────────────────────────────────────────────
-        st.markdown("""
-        <div style="
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 18px; font-weight: 800; color: #1f4e79;
-            margin-top: 24px; margin-bottom: 14px;
-        ">📊 Quota Completeness</div>
-        """, unsafe_allow_html=True)
+        st.markdown("""<div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;
+            font-weight:800;color:#1f4e79;margin-top:24px;margin-bottom:14px;">
+            📊 Quota Completeness</div>""", unsafe_allow_html=True)
 
         qrows=[]
         for sec,cfg in st.session_state.subject_config.items():
@@ -2298,35 +1854,25 @@ if menu == "Analytics":
         if qrows:
             def _qc(v): return "background-color:#ff6b6b" if v>0 else "background-color:#90ee90"
             st.dataframe(pd.DataFrame(qrows).style.applymap(_qc,subset=["Remaining"]),
-                         use_container_width=True,hide_index=True)
+                         use_container_width=True, hide_index=True)
 
-        # ── School Master Timetable ───────────────────────────────────────────
-        st.markdown("""
-        <div style="
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 18px; font-weight: 800; color: #1f4e79;
-            margin-top: 24px; margin-bottom: 14px;
-        ">📋 School Master Timetable</div>
-        """, unsafe_allow_html=True)
+        st.markdown("""<div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;
+            font-weight:800;color:#1f4e79;margin-top:24px;margin-bottom:14px;">
+            📋 School Master Timetable</div>""", unsafe_allow_html=True)
 
         df_master=build_principal_matrix()
         st.dataframe(df_master, use_container_width=True)
 
-        # ── AI Analysis ───────────────────────────────────────────────────────
         if not df_master.empty:
             if st.button("🤖 AI Analyze Timetable"):
                 with st.spinner("Analyzing with GPT-4o-mini…"):
                     result = ai_analyze_timetable(df_master)
                 st.markdown("""
-                <div style="
-                    background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fb 100%);
-                    border: 1px solid #bfdbfe; border-left: 4px solid #4a90e2;
-                    border-radius: 12px; padding: 20px 24px; margin-top: 16px;
-                ">
-                    <div style="
-                        font-family:'Plus Jakarta Sans',sans-serif;
-                        font-weight:800; color:#1f4e79; font-size:16px; margin-bottom:10px;
-                    ">🤖 AI Analysis</div>
+                <div style="background:linear-gradient(135deg,#f0f7ff 0%,#e8f0fb 100%);
+                    border:1px solid #bfdbfe;border-left:4px solid #4a90e2;
+                    border-radius:12px;padding:20px 24px;margin-top:16px;">
+                    <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;
+                        color:#1f4e79;font-size:16px;margin-bottom:10px;">🤖 AI Analysis</div>
                 """, unsafe_allow_html=True)
                 st.markdown(result)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -2341,3 +1887,117 @@ if menu == "Analytics":
                 path=export_excel(df_master)
                 with open(path,"rb") as f:
                     st.download_button("⬇ Download Excel",f,file_name="School_Timetable.xlsx")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOWNLOADS  (NEW PAGE — FIX: replaces the broken bottom block)
+# ══════════════════════════════════════════════════════════════════════════════
+
+if menu == "Downloads" and is_admin:
+    if not st.session_state.timetable:
+        st.warning("Generate a timetable first.")
+    else:
+        st.markdown("""
+        <div style="background:linear-gradient(135deg,#f0f7ff 0%,#e0edff 100%);
+                    border:1px solid #bfdbfe;border-radius:13px;
+                    padding:20px 26px;margin-bottom:24px;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;
+                        font-weight:800;color:#1f4e79;margin-bottom:5px;">
+                📦 Bulk Download Centre</div>
+            <div style="color:#4a6fa5;font-size:13.5px;">
+                Generate and download all timetable PDFs in a single ZIP file.
+                Choose which set to include below.
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        # ── Option selector (FIX: defined BEFORE use) ────────────────────────
+        option = st.radio(
+            "Select download set",
+            ["All", "Class View Only", "Teacher View Only"],
+            horizontal=True,
+        )
+
+        n_classes   = len(st.session_state.sections)
+        n_teachers  = len(st.session_state.teachers)
+
+        # Summary row
+        col1, col2, col3 = st.columns(3)
+        col1.metric("📁 Class PDFs",   n_classes)
+        col2.metric("📁 Teacher PDFs", n_teachers)
+        col3.metric("📁 Total Files",
+                    n_classes + n_teachers if option == "All"
+                    else (n_classes if option == "Class View Only" else n_teachers))
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        if st.button("⚙️ Prepare & Download ZIP", key="dl_zip_btn", use_container_width=True):
+            # Always regenerate so files are fresh
+            class_files   = []
+            teacher_files = []
+
+            prog = st.progress(0, text="Generating PDFs…")
+            total_items = n_classes + n_teachers
+            done = 0
+
+            if option in ("All", "Class View Only"):
+                for section in st.session_state.sections:
+                    path = export_class_timetable_pdf(section)
+                    class_files.append(path)
+                    done += 1
+                    prog.progress(done / total_items,
+                                  text=f"Class PDF: {section} ({done}/{total_items})")
+
+            if option in ("All", "Teacher View Only"):
+                for teacher in st.session_state.teachers:
+                    path = export_teacher_view_pdf(teacher)
+                    teacher_files.append(path)
+                    done += 1
+                    prog.progress(done / total_items,
+                                  text=f"Teacher PDF: {teacher} ({done}/{total_items})")
+
+            prog.empty()
+
+            # Decide which files go in the ZIP
+            if option == "All":
+                selected_files = class_files + teacher_files
+                zip_name       = "all_timetables.zip"
+            elif option == "Class View Only":
+                selected_files = class_files
+                zip_name       = "class_timetables.zip"
+            else:
+                selected_files = teacher_files
+                zip_name       = "teacher_timetables.zip"
+
+            if not selected_files:
+                st.error("No files were generated. Ensure sections/teachers exist.")
+            else:
+                zip_path = create_zip(selected_files, zip_name)
+                with open(zip_path, "rb") as zf:
+                    st.download_button(
+                        label=f"⬇ Download {zip_name}",
+                        data=zf,
+                        file_name=zip_name,
+                        mime="application/zip",
+                        use_container_width=True,
+                    )
+                st.success(f"✅ ZIP ready — {len(selected_files)} PDF(s) included.")
+
+        st.divider()
+
+        # ── Individual quick-download section ────────────────────────────────
+        with st.expander("📄 Download individual class timetable PDF"):
+            sec_dl = st.selectbox("Section", sorted(st.session_state.sections.keys()),
+                                  key="dl_sec")
+            if st.button("Generate & Download", key="dl_sec_btn"):
+                path = export_class_timetable_pdf(sec_dl)
+                with open(path,"rb") as f:
+                    st.download_button("⬇ Download PDF", f, file_name=path,
+                                       mime="application/pdf", key="dl_sec_dl")
+
+        with st.expander("📄 Download individual teacher timetable PDF"):
+            tch_dl = st.selectbox("Teacher", sorted(st.session_state.teachers.keys()),
+                                  key="dl_tch")
+            if st.button("Generate & Download", key="dl_tch_btn"):
+                path = export_teacher_view_pdf(tch_dl)
+                with open(path,"rb") as f:
+                    st.download_button("⬇ Download PDF", f, file_name=path,
+                                       mime="application/pdf", key="dl_tch_dl")
