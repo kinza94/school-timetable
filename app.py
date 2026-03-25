@@ -1315,9 +1315,21 @@ def calculate_fitness():
 # MISC HELPERS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 def build_daywise_class_view(day):
-    data = []
     periods = get_periods(day)
 
+    data = []
+
+    # 🔽 FIRST ROW → TIMINGS
+    time_row = {"Class": "Time"}
+    for p in periods:
+        if p == "Lunch":
+            time_row["Break"] = ""
+        else:
+            time_row[p] = get_time(day, p)
+
+    data.append(time_row)
+
+    # 🔽 ACTUAL DATA
     for sec in st.session_state.timetable:
         row = {"Class": sec}
 
@@ -1327,12 +1339,11 @@ def build_daywise_class_view(day):
                 continue
 
             cell = slot(sec, day, p)
-            time = get_time(day, p)
 
             if cell["subject"]:
-                row[p] = f"{cell['subject']} ({cell['teacher']})\n{time}"
+                row[p] = f"{cell['subject']} ({cell['teacher']})"
             else:
-                row[p] = f"{time}"
+                row[p] = ""
 
         data.append(row)
 
@@ -1343,7 +1354,6 @@ def build_daywise_class_view(day):
         cols.insert(5, "Break")
 
     return df[cols]
-
 
 def export_daywise_excel(day):
     df = build_daywise_class_view(day)
@@ -1363,12 +1373,11 @@ def export_daywise_excel(day):
         for row in ["A1", "A2", "A3"]:
             ws[row].font = Font(bold=True, size=14)
 
-        # Merge heading across columns
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(df.columns))
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(df.columns))
         ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=len(df.columns))
 
-        # Header styling
+        # 🔽 HEADER STYLE
         header_fill = PatternFill("solid", fgColor="1F4E79")
         header_row = 6
 
@@ -1377,16 +1386,24 @@ def export_daywise_excel(day):
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # Borders + alignment
+        # 🔽 TIME ROW STYLE (IMPORTANT NEW)
+        time_row_index = header_row + 1
+
+        for cell in ws[time_row_index]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="D9E1F2")  # light blue
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # 🔽 BORDERS + ALIGNMENT
         thin = Side(style="thin")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-        for row in ws.iter_rows(min_row=header_row + 1):
+        for row in ws.iter_rows(min_row=header_row+1):
             for cell in row:
                 cell.border = border
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-        # Auto width
+        # 🔽 AUTO WIDTH
         for col in ws.columns:
             max_length = max(len(str(cell.value or "")) for cell in col)
             ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_length + 5, 35)
