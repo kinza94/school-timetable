@@ -7,14 +7,6 @@ import sqlite3
 
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-
-try:
-    from openai import OpenAI as _OpenAI
-    _openai_key = os.getenv("OPENAI_API_KEY", "")
-    openai_client = _OpenAI(api_key=_openai_key) if _openai_key else None
-except ImportError:
-    openai_client = None
-
 from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.shared import Inches  # noqa: F401  (kept for compatibility)
@@ -25,7 +17,39 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONSTANTS  (unchanged)
+# AI CLIENT SETUP
+# ══════════════════════════════════════════════════════════════════════════════
+
+from openai import OpenAI as _OpenAI
+
+# Set the API key BEFORE creating the client
+os.environ["OPENAI_API_KEY"] = ""   # 👈 Replace with your actual HF token
+
+_openai_key = os.getenv("OPENAI_API_KEY", "")
+
+openai_client = _OpenAI(
+    api_key=_openai_key,
+    base_url="https://router.huggingface.co/v1"
+) if _openai_key else None
+
+def ask_ai(prompt):
+    if not openai_client:
+        return "❌ API not connected"
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="moonshotai/Kimi-K2-Instruct",
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message.content
+
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -65,6 +89,7 @@ SUBJECT_GROUPS = {
     "SINDHI": ["SINDHI"],
     "TS": ["TS", "PH", "GP"]
 }
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -85,7 +110,7 @@ subject_remaining = {}
 teacher_three_streak_count = {}
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CORE HELPERS  (unchanged)
+# CORE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def clean(x):
@@ -101,7 +126,6 @@ def get_periods(day):
     if day == "Friday":
         return ["P1","P2","P3","P4","Lunch","P5","P6"]
     return ["P1","P2","P3","P4","Lunch","P5","P6","P7","P8"]
-
 def get_time(day, period):
     if day in ("Monday","Tuesday","Wednesday"): return MON_WED_TIMES.get(period,"")
     if day == "Thursday":                       return THURSDAY_TIMES.get(period,"")
@@ -132,15 +156,15 @@ def build_subject_timetable(group_name):
             selected_teachers.append(teacher)
 
     return df[fixed_cols + selected_teachers]
+
 # ══════════════════════════════════════════════════════════════════════════════
-# SESSION STATE  (single initialisation block — BUG FIX: removed duplicate)
+# SESSION STATE  (single initialisation block)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _DEFAULTS = {
     "teachers":{}, "sections":{}, "class_teachers":{},
     "subject_config":{}, "teacher_assignment":{}, "timetable":{},
     "logged_in":False, "role":None,
-    # FIX: initialised here once instead of twice at the top of the file
     "class_view_files": [],
     "teacher_view_files": [],
 }
@@ -149,7 +173,7 @@ for _k, _v in _DEFAULTS.items():
         st.session_state[_k] = _v
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PERSISTENCE  (unchanged)
+# PERSISTENCE
 # ══════════════════════════════════════════════════════════════════════════════
 
 def save_all_data():
@@ -213,7 +237,6 @@ if not st.session_state.logged_in:
     }
     .login-footer { text-align: center; color: #8fa8c8; font-size: 0.78rem; margin-top: 18px; }
 
-    /* ── MOBILE FIX: Login page responsive styles ── */
     @media (max-width: 768px) {
         .login-banner { padding: 28px 12px 14px; }
         .login-banner h1 { font-size: 1.5rem !important; }
@@ -224,7 +247,6 @@ if not st.session_state.logged_in:
             border-radius: 14px;
         }
     }
-    /* ── END MOBILE FIX ── */
     </style>
     <div class="login-banner">
         <h1>🏫 DHACSS Phase IV Campus</h1>
@@ -257,7 +279,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GLOBAL STYLES  (unchanged — kept identical to original)
+# GLOBAL STYLES
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.markdown("""
@@ -441,7 +463,6 @@ hr { border-color:var(--border) !important; margin:18px 0 !important; }
     font-family:'Plus Jakarta Sans',sans-serif; font-size:.7rem; font-weight:700;
     letter-spacing:1px; text-transform:uppercase; color:var(--muted); margin-bottom:6px;
 }
-/* ── Download page card ──────────────────────────────────────────────────── */
 .dl-card {
     background:var(--surface); border-radius:14px; padding:28px 32px;
     box-shadow:var(--shadow-lg); border:1px solid var(--border); margin-bottom:20px;
@@ -449,20 +470,12 @@ hr { border-color:var(--border) !important; margin:18px 0 !important; }
 .dl-card h3 { margin:0 0 6px !important; font-size:1.05rem !important; }
 .dl-card p  { color:var(--muted); font-size:.875rem; margin:0 0 18px; }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   MOBILE FIX — All responsive overrides below. Desktop layout unchanged.
-   Target: screens ≤ 768px (phones & small tablets).
-   ══════════════════════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-
-    /* MOBILE FIX: Reduce main container padding on small screens */
     [data-testid="block-container"] {
         padding-left: 0.6rem !important;
         padding-right: 0.6rem !important;
         padding-top: 0.8rem !important;
     }
-
-    /* MOBILE FIX: App header — stack icon + text vertically, shrink fonts */
     .app-header {
         flex-direction: column !important;
         align-items: flex-start !important;
@@ -476,69 +489,39 @@ hr { border-color:var(--border) !important; margin:18px 0 !important; }
         height: 42px !important;
         font-size: 20px !important;
     }
-    .app-header h1 {
-        font-size: 1.05rem !important;
-    }
-    .app-header p {
-        font-size: 0.75rem !important;
-    }
-
-    /* MOBILE FIX: Shrink heading sizes so they don't overflow */
+    .app-header h1 { font-size: 1.05rem !important; }
+    .app-header p  { font-size: 0.75rem !important; }
     h1 { font-size: 1.2rem !important; }
     h2 { font-size: 1.05rem !important; }
     h3 { font-size: 0.95rem !important; }
-
-    /* MOBILE FIX: Make all regular buttons full-width */
     .stButton > button {
         width: 100% !important;
         font-size: 13px !important;
         height: 3em !important;
     }
-
-    /* MOBILE FIX: Make download buttons full-width */
     [data-testid="stDownloadButton"] > button {
         width: 100% !important;
         font-size: 13px !important;
     }
-
-    /* MOBILE FIX: DataFrames — enable horizontal scroll so table is not clipped */
     [data-testid="stDataFrame"] {
         overflow-x: auto !important;
         -webkit-overflow-scrolling: touch !important;
         max-width: 100% !important;
     }
-    [data-testid="stDataFrame"] > div {
-        overflow-x: auto !important;
-    }
-
-    /* MOBILE FIX: DataEditor (editable tables) — also scrollable */
+    [data-testid="stDataFrame"] > div { overflow-x: auto !important; }
     [data-testid="stDataEditor"] {
         overflow-x: auto !important;
         -webkit-overflow-scrolling: touch !important;
         max-width: 100% !important;
     }
-
-    /* MOBILE FIX: DataFrames — smaller cell fonts to fit more columns */
     [data-testid="stDataFrame"] td {
         font-size: 11px !important;
         padding: 6px 8px !important;
     }
-    [data-testid="stDataFrame"] th {
-        font-size: 10px !important;
-    }
-
-    /* MOBILE FIX: Metric cards — reduce padding & font size */
-    [data-testid="stMetric"] {
-        padding: 12px 14px !important;
-    }
-    [data-testid="stMetricValue"] {
-        font-size: 1.4rem !important;
-    }
-    [data-testid="stMetricLabel"] {
-        font-size: 10px !important;
-    }
-
-    /* MOBILE FIX: Tabs — allow horizontal scroll if many tabs; shrink tab text */
+    [data-testid="stDataFrame"] th { font-size: 10px !important; }
+    [data-testid="stMetric"] { padding: 12px 14px !important; }
+    [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 10px !important; }
     [data-testid="stTabs"] [data-baseweb="tab-list"] {
         overflow-x: auto !important;
         flex-wrap: nowrap !important;
@@ -549,70 +532,32 @@ hr { border-color:var(--border) !important; margin:18px 0 !important; }
         padding: 7px 10px !important;
         white-space: nowrap !important;
     }
-
-    /* MOBILE FIX: Sidebar — Streamlit renders it as an overlay on mobile
-       by default, so we just ensure its content text is readable */
     [data-testid="stSidebar"] p,
     [data-testid="stSidebar"] span,
-    [data-testid="stSidebar"] div {
-        font-size: 13px !important;
-    }
-
-    /* MOBILE FIX: ui-card — tighter padding */
-    .ui-card {
-        padding: 14px 14px !important;
-    }
-
-    /* MOBILE FIX: dl-card (Downloads page) — tighter padding */
-    .dl-card {
-        padding: 16px 14px !important;
-    }
-
-    /* MOBILE FIX: Section/teacher banner cards inside Class View & Teacher View */
-    /* These are inline HTML divs — cap their padding and font size */
+    [data-testid="stSidebar"] div { font-size: 13px !important; }
+    .ui-card { padding: 14px 14px !important; }
+    .dl-card { padding: 16px 14px !important; }
     div[style*="border-radius:12px"][style*="padding:16px 24px"] {
         padding: 12px 14px !important;
     }
-
-    /* MOBILE FIX: Selectbox & text inputs — ensure they don't overflow */
     [data-testid="stSelectbox"] > div > div,
     [data-testid="stTextInput"] input,
-    [data-testid="stNumberInput"] input {
-        font-size: 13px !important;
-    }
-
-    /* MOBILE FIX: Slider — ensure label readable */
-    [data-testid="stSlider"] label {
-        font-size: 12px !important;
-    }
-
-    /* MOBILE FIX: Expander summary — slightly smaller text */
+    [data-testid="stNumberInput"] input { font-size: 13px !important; }
+    [data-testid="stSlider"] label { font-size: 12px !important; }
     [data-testid="stExpander"] summary {
         font-size: 13px !important;
         padding: 10px 12px !important;
     }
-
-    /* MOBILE FIX: Progress bar label */
-    [data-testid="stProgressBar"] + div {
-        font-size: 12px !important;
-    }
-
-    /* MOBILE FIX: Chip/badge spans (sections & teachers lists) — wrap nicely */
+    [data-testid="stProgressBar"] + div { font-size: 12px !important; }
     span[style*="display:inline-block"] {
         font-size: 12px !important;
         padding: 4px 10px !important;
         margin: 2px !important;
     }
-
-    /* MOBILE FIX: column gaps on very small screens —
-       Streamlit columns stack automatically below ~640px in most cases,
-       but we nudge spacing to avoid cramped buttons */
     [data-testid="column"] {
         padding-left: 4px !important;
         padding-right: 4px !important;
     }
-
-    /* MOBILE FIX: info / warning / success / error banners */
     [data-testid="stInfo"],
     [data-testid="stWarning"],
     [data-testid="stSuccess"],
@@ -620,14 +565,8 @@ hr { border-color:var(--border) !important; margin:18px 0 !important; }
         font-size: 13px !important;
         padding: 10px 12px !important;
     }
-
-    /* MOBILE FIX: Radio buttons (Downloads page option selector) */
-    [data-testid="stRadio"] label {
-        font-size: 13px !important;
-    }
+    [data-testid="stRadio"] label { font-size: 13px !important; }
 }
-/* ══ END MOBILE FIX ══════════════════════════════════════════════════════════ */
-
 </style>""", unsafe_allow_html=True)
 
 # App header
@@ -642,7 +581,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VALIDATION  (unchanged)
+# VALIDATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 def validate_subject_weekly(section):
@@ -730,7 +669,7 @@ def validate_no_three_consecutive():
     return issues
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TIMETABLE QUERY HELPERS  (unchanged)
+# TIMETABLE QUERY HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def count_teacher_periods(teacher):
@@ -774,7 +713,7 @@ def get_last_teaching_period(day):
     return [p for p in get_periods(day) if p != "Lunch"][-1]
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SUBJECT CATEGORY HELPERS  (unchanged)
+# SUBJECT CATEGORY HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 DAILY_SINGLE_KEYWORDS = [
@@ -801,7 +740,7 @@ def is_double_allowed(subject):
     return is_math(subject) or is_ix_x_double(subject)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONSTRAINT ENGINE  (unchanged — do not modify)
+# CONSTRAINT ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _init_teacher(t_key):
@@ -945,7 +884,7 @@ def undo_assignment(section, day, period):
         if not still: double_used.pop((section,subject), None)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCHEDULER HELPERS  (unchanged)
+# SCHEDULER HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _find_teacher(section, subject):
@@ -1312,103 +1251,89 @@ def calculate_fitness():
     return score
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MISC HELPERS  (unchanged)
+# MISC HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+def get_timetable_text():
+    text = ""
+    for sec in st.session_state.timetable:
+        text += f"\nSection: {sec}\n"
+        for day in DAYS:
+            text += f"{day}: "
+            for p in get_periods(day):
+                if p == "Lunch":
+                    continue
+                cell = st.session_state.timetable[sec][day][p]
+                if cell["teacher"]:
+                    text += f"{p}-{cell['teacher']} ({cell['subject']}), "
+            text += "\n"
+    return text
 def build_daywise_class_view(day):
     periods = get_periods(day)
-
     data = []
 
-    # 🔽 FIRST ROW → TIMINGS
     time_row = {"Class": "Time"}
     for p in periods:
         if p == "Lunch":
             time_row["Break"] = ""
         else:
             time_row[p] = get_time(day, p)
-
     data.append(time_row)
 
-    # 🔽 ACTUAL DATA
     for sec in st.session_state.timetable:
         row = {"Class": sec}
-
         for p in periods:
             if p == "Lunch":
                 row["Break"] = "BREAK"
                 continue
-
             cell = slot(sec, day, p)
-
             if cell["subject"]:
                 row[p] = f"{cell['subject']} ({cell['teacher']})"
             else:
                 row[p] = ""
-
         data.append(row)
 
     df = pd.DataFrame(data)
-
     cols = ["Class"] + [p for p in periods if p != "Lunch"]
     if "Lunch" in periods:
         cols.insert(5, "Break")
-
     return df[cols]
 
 def export_daywise_excel(day):
     df = build_daywise_class_view(day)
-
     file_name = f"{day}_Class_Timetable.xlsx"
-
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, startrow=5, sheet_name=day)
-
         ws = writer.sheets[day]
-
-        # 🔽 HEADING
         ws["A1"] = "DHACSS PHASE IV"
         ws["A2"] = "DAY WISE TIME TABLE (SENIOR SECTION)"
         ws["A3"] = f"DAY: {day}"
-
         for row in ["A1", "A2", "A3"]:
             ws[row].font = Font(bold=True, size=14)
-
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(df.columns))
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(df.columns))
         ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=len(df.columns))
-
-        # 🔽 HEADER STYLE
         header_fill = PatternFill("solid", fgColor="1F4E79")
         header_row = 6
-
         for cell in ws[header_row]:
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        # 🔽 TIME ROW STYLE (IMPORTANT NEW)
         time_row_index = header_row + 1
-
         for cell in ws[time_row_index]:
             cell.font = Font(bold=True)
-            cell.fill = PatternFill("solid", fgColor="D9E1F2")  # light blue
+            cell.fill = PatternFill("solid", fgColor="D9E1F2")
             cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        # 🔽 BORDERS + ALIGNMENT
         thin = Side(style="thin")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
         for row in ws.iter_rows(min_row=header_row+1):
             for cell in row:
                 cell.border = border
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-        # 🔽 AUTO WIDTH
         for col in ws.columns:
             max_length = max(len(str(cell.value or "")) for cell in col)
             ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_length + 5, 35)
-
     return file_name
+
 def replace_teacher_everywhere(old, new):
     for sec in st.session_state.timetable:
         for day in DAYS:
@@ -1434,7 +1359,7 @@ def _pdf_style(lunch_rows=None):
     return TableStyle(cmds)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EXPORTS  (unchanged logic; removed side-effect append from export functions)
+# EXPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _word_landscape(doc):
@@ -1469,7 +1394,6 @@ def export_teacher_view_word(teacher):
     fn=f"{teacher}_timetable.docx"; doc.save(fn); return fn
 
 def export_teacher_view_pdf(teacher):
-    """Generate teacher PDF. Returns file path. Does NOT mutate session state lists."""
     path=f"{teacher}_timetable.pdf"
     doc=SimpleDocTemplate(path,pagesize=landscape(A4),
                           leftMargin=20,rightMargin=20,topMargin=30,bottomMargin=30)
@@ -1494,10 +1418,9 @@ def export_teacher_view_pdf(teacher):
     pw=landscape(A4)[0]-40; cw=pw/len(data[0])
     tbl=Table(data,colWidths=[cw]*len(data[0]),repeatRows=1)
     tbl.setStyle(_pdf_style(lunch_rows)); elems.append(tbl); doc.build(elems)
-    return path   # FIX: removed side-effect append to session_state list
+    return path
 
 def export_class_timetable_pdf(section):
-    """Generate class PDF. Returns file path. Does NOT mutate session state lists."""
     path=f"{section}_timetable.pdf"
     doc=SimpleDocTemplate(path,pagesize=landscape(A4),
                           leftMargin=40,rightMargin=40,topMargin=40,bottomMargin=40)
@@ -1519,10 +1442,10 @@ def export_class_timetable_pdf(section):
         c=slot(section,"Friday",period) if period in get_periods("Friday") else {}
         row.append(f"{c['subject']}\n({c['teacher']})" if c.get("subject") else "")
         row.append(FRIDAY_TIMES.get(period,"")); data.append(row)
-    cw=[36,58,78,78,78,58,78,78,58]
+    cw = [50, 75, 110, 110, 110, 75, 110, 110, 75]
     tbl=Table(data,colWidths=cw,repeatRows=1)
     tbl.setStyle(_pdf_style(lunch_rows)); elems.append(tbl); doc.build(elems)
-    return path   # FIX: removed side-effect append to session_state list
+    return path
 
 def export_class_timetable_to_word(section):
     doc=Document(); _word_landscape(doc)
@@ -1568,9 +1491,7 @@ def build_principal_matrix():
     df=pd.DataFrame(rows)
     df.loc[df["Day"].duplicated(),"Day"]=""
     df["P. No."]=df["P. No."].astype(str)
-    # 🔽 GROUP TEACHERS BY SUBJECT
     cols = list(df.columns)
-
     fixed_cols = ["Day", "P. No.", "Bell Timing"]
     teacher_cols = [c for c in cols if c not in fixed_cols]
 
@@ -1578,28 +1499,18 @@ def build_principal_matrix():
         subjects = []
         for sec in st.session_state.teacher_assignment.get(teacher, {}):
             subjects += st.session_state.teacher_assignment[teacher][sec]
-
         for s in subjects:
             return get_group(s)
         return "OTHER"
 
     GROUP_ORDER = [
-        "ENGLISH",
-        "URDU",
-        "ISLAMIAT_ARABIC",
-        "MATH",
-        "SCIENCE",
-        "COMPUTER",
-        "SOCIAL",
-        "SINDHI",
-        "TS"
+        "ENGLISH","URDU","ISLAMIAT_ARABIC","MATH","SCIENCE",
+        "COMPUTER","SOCIAL","SINDHI","TS"
     ]
-
     teacher_cols = sorted(
         teacher_cols,
         key=lambda t: GROUP_ORDER.index(teacher_group(t)) if teacher_group(t) in GROUP_ORDER else 999
     )
-
     df = df[fixed_cols + teacher_cols]
     return df
 
@@ -1645,92 +1556,18 @@ def export_excel(df):
             ml=max((len(str(c.value or "")) for c in col),default=0)
             ws.column_dimensions[get_column_letter(col[0].column)].width=min(ml+4,30)
     return file
-df_master = build_principal_matrix()
-# Master Excel Download
-path = export_excel(df_master)
 
-with open(path, "rb") as f:
-    st.download_button(
-        "📥 Download Master Timetable Excel",
-        data=f,
-        file_name="Master_Timetable.xlsx"
-    )
-group = st.selectbox(
-    "Select Subject Group",
-    list(SUBJECT_GROUPS.keys()),
-    key="main_group_select"
-)
-df_group = build_subject_timetable(group)
-st.dataframe(df_group, use_container_width=True)  # MOBILE FIX: use_container_width=True
-# 📥 Subject-wise Excel Download
-file_name = f"{group}_Timetable.xlsx"
-
-path_group = export_excel(df_group)
-
-with open(path_group, "rb") as f:
-    st.download_button(
-        f"📥 Download {group} Timetable Excel",
-        data=f,
-        file_name=file_name
-    )
-st.markdown("## 📅 Day-wise Class Timetable")
-
-selected_day = st.selectbox(
-    "Select Day",
-    DAYS,
-    key="daywise_view"
-)
-
-df_daywise = build_daywise_class_view(selected_day)
-
-st.dataframe(df_daywise, use_container_width=True)
-file_path = export_daywise_excel(selected_day)
-
-with open(file_path, "rb") as f:
-    st.download_button(
-        label=f"📥 Download {selected_day} Timetable (Excel)",
-        data=f,
-        file_name=file_path,
-        key="download_daywise_excel"
-    )
 # ══════════════════════════════════════════════════════════════════════════════
-# BULK ZIP HELPER  (FIX: centralised, no undefined variables)
+# BULK ZIP HELPER
 # ══════════════════════════════════════════════════════════════════════════════
 
 def create_zip(file_paths: list, zip_name: str = "timetable_download.zip") -> str:
-    """Create a ZIP archive from a list of existing file paths. Returns zip path."""
     with zipfile.ZipFile(zip_name, "w", zipfile.ZIP_DEFLATED) as zf:
         for fp in file_paths:
             if os.path.exists(fp):
                 zf.write(fp, os.path.basename(fp))
     return zip_name
 
-# ══════════════════════════════════════════════════════════════════════════════
-# AI ANALYSIS  (unchanged)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def ai_analyze_timetable(df) -> str:
-    if openai_client is None:
-        return ("⚠️ OpenAI API key not configured. "
-                "Set the OPENAI_API_KEY environment variable to enable AI analysis.")
-    prompt = (
-        "You are a school timetabling expert. Analyze the school timetable below "
-        "and provide concise, actionable feedback on:\n"
-        "1. Teacher workload balance (flag overloaded or underloaded teachers)\n"
-        "2. Subject distribution across the week (spread vs clustering)\n"
-        "3. Any scheduling constraint violations you can detect\n"
-        "4. Top 3 specific improvement suggestions\n\n"
-        f"Timetable:\n{df.to_string()}"
-    )
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=900, temperature=0.3,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as exc:
-        return f"⚠️ AI analysis failed: {exc}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NAVIGATION
@@ -1762,7 +1599,6 @@ with st.sidebar:
     st.markdown('<p class="section-label" style="color:rgba(255,255,255,.45);padding:0 4px;">Navigation</p>',
                 unsafe_allow_html=True)
 
-    # FIX: "Downloads" page added to admin navigation
     pages = (["Dashboard","Configuration","Generate","Class View",
                "Teacher View","Analytics","Downloads"]
              if is_admin else ["Class View","Teacher View","Analytics"])
@@ -1818,14 +1654,7 @@ if menu == "Dashboard":
             </div>
         </div>
     </div>""", unsafe_allow_html=True)
-st.subheader("📊 Master Timetable")
-df_master = build_principal_matrix()
-st.dataframe(df_master, use_container_width=True)  # MOBILE FIX: use_container_width=True
-group = st.selectbox("Select Subject Group", list(SUBJECT_GROUPS.keys()))
 
-df_group = build_subject_timetable(group)
-
-st.subheader(f"{group} Timetable")
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2223,7 +2052,7 @@ if menu == "Teacher View":
             "Friday":        df_data["Friday"],
             "Fri Time":      [FRIDAY_TIMES.get(p,"")   for p in ALL_PERIODS],
         }).set_index("Period")
-        st.dataframe(df, use_container_width=True)  # MOBILE FIX: use_container_width=True
+        st.dataframe(df, use_container_width=True)
 
         col1,col2=st.columns(2)
         with col1:
@@ -2282,21 +2111,136 @@ if menu == "Analytics":
             📋 School Master Timetable</div>""", unsafe_allow_html=True)
 
         df_master=build_principal_matrix()
-        st.dataframe(df_master, use_container_width=True)  # MOBILE FIX: use_container_width=True
+        st.dataframe(df_master, use_container_width=True)
 
-        if not df_master.empty:
-            if st.button("🤖 AI Analyze Timetable"):
-                with st.spinner("Analyzing with GPT-4o-mini…"):
-                    result = ai_analyze_timetable(df_master)
-                st.markdown("""
-                <div style="background:linear-gradient(135deg,#f0f7ff 0%,#e8f0fb 100%);
-                    border:1px solid #bfdbfe;border-left:4px solid #4a90e2;
-                    border-radius:12px;padding:20px 24px;margin-top:16px;">
-                    <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;
-                        color:#1f4e79;font-size:16px;margin-bottom:10px;">🤖 AI Analysis</div>
-                """, unsafe_allow_html=True)
-                st.markdown(result)
-                st.markdown("</div>", unsafe_allow_html=True)
+        # =========================
+        # ✅ USER INPUT (DEFINE FIRST)
+        # =========================
+        user_input = st.chat_input("Ask about timetable, swaps, teacher availability...")
+
+
+        # =========================
+        # ✅ FUNCTIONS
+        # =========================
+
+        def get_timetable_text():
+            text = ""
+            for sec in st.session_state.timetable:
+                text += f"\nSection: {sec}\n"
+                for day in DAYS:
+                    text += f"{day}: "
+                    for p in get_periods(day):
+                        if p == "Lunch":
+                            continue
+                        cell = st.session_state.timetable[sec][day][p]
+                        if cell["teacher"]:
+                            text += f"{p}-{cell['teacher']} ({cell['subject']}), "
+                    text += "\n"
+            return text
+
+
+        def get_all_teachers_view(df):
+            text = ""
+
+            # ✅ Normalize columns (fixes KeyError issue)
+            df.columns = df.columns.str.strip().str.lower()
+
+            # ✅ Required columns check
+            required_cols = ['teacher', 'day', 'period', 'section']
+
+            for col in required_cols:
+                if col not in df.columns:
+                    st.error(f"❌ Missing column: {col}")
+                    st.write("Available columns:", df.columns.tolist())
+                    return "Error in teacher data"
+
+            teachers = df['teacher'].unique()
+
+            for teacher in teachers:
+                text += f"\n{teacher}:\n"
+
+                teacher_df = df[df['teacher'] == teacher]
+                grouped = teacher_df.groupby(['day', 'period'])['section'].apply(list)
+
+                for (day, period), sections in grouped.items():
+                    text += f"  {day} {period}: {', '.join(sections)}\n"
+
+            return text
+
+
+        # =========================
+        # ✅ AI EXECUTION
+        # =========================
+
+        if user_input:
+            with st.spinner("Thinking..."):
+
+                timetable_data = get_timetable_text()
+                teachers_data = get_all_teachers_view(df_master)
+
+                st.write("📡 Sending THIS to AI:")
+
+                full_prompt = f"""
+        You are an expert school timetable optimizer and conflict resolver.
+
+        Your task is to REMOVE conflicts for TABUSSUM (or any teacher mentioned in the user request).
+
+        -----------------------
+        USER REQUEST:
+        {user_input}
+        -----------------------
+
+        FULL CLASS TIMETABLE:
+        {timetable_data}
+
+        -----------------------
+
+        TEACHER TIMETABLE VIEW:
+        {teachers_data}
+
+        -----------------------
+
+        STRICT RULES (MUST FOLLOW ALL):
+
+        1. Focus ONLY on resolving the conflict mentioned.
+        2. Do NOT create conflicts for any other teacher.
+        3. A teacher can ONLY teach their assigned subject.
+        4. Subject must NOT change (Physics stays Physics, etc).
+        5. Do NOT change consecutive (double) periods.
+        6. Swap ONLY with a teacher already assigned in the SAME time slot.
+        7. Swap ONLY if subject matches.
+        8. Make minimum possible change.
+        9. Analyze BOTH timetable and teacher view before decision.
+
+        -----------------------
+
+        RESPONSE FORMAT:
+
+        ✔ Conflict identified:
+        ✔ Swap performed:
+        ✔ Final result:
+
+        If NOT possible:
+        Say "Not possible" with reason.
+
+        -----------------------
+
+        IMPORTANT:
+        - Be precise
+        - Do NOT rewrite full timetable
+        """
+
+                # ✅ Debug view
+                st.code(full_prompt)
+
+                result = ask_ai(full_prompt)
+
+            st.write("🤖 AI Response:")
+            st.write(result)
+
+        else:
+            st.info("💡 Try: 'Remove Tabussum conflict on Monday Period 3'")
+
 
         if not df_master.empty:
             col1,col2=st.columns(2)
@@ -2310,7 +2254,7 @@ if menu == "Analytics":
                     st.download_button("⬇ Download Excel",f,file_name="School_Timetable.xlsx")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DOWNLOADS  (NEW PAGE — FIX: replaces the broken bottom block)
+# DOWNLOADS
 # ══════════════════════════════════════════════════════════════════════════════
 
 if menu == "Downloads" and is_admin:
@@ -2330,7 +2274,6 @@ if menu == "Downloads" and is_admin:
             </div>
         </div>""", unsafe_allow_html=True)
 
-        # ── Option selector (FIX: defined BEFORE use) ────────────────────────
         option = st.radio(
             "Select download set",
             ["All", "Class View Only", "Teacher View Only"],
@@ -2340,7 +2283,6 @@ if menu == "Downloads" and is_admin:
         n_classes   = len(st.session_state.sections)
         n_teachers  = len(st.session_state.teachers)
 
-        # Summary row
         col1, col2, col3 = st.columns(3)
         col1.metric("📁 Class PDFs",   n_classes)
         col2.metric("📁 Teacher PDFs", n_teachers)
@@ -2351,7 +2293,6 @@ if menu == "Downloads" and is_admin:
         st.markdown("<br>", unsafe_allow_html=True)
 
         if st.button("⚙️ Prepare & Download ZIP", key="dl_zip_btn", use_container_width=True):
-            # Always regenerate so files are fresh
             class_files   = []
             teacher_files = []
 
@@ -2377,7 +2318,6 @@ if menu == "Downloads" and is_admin:
 
             prog.empty()
 
-            # Decide which files go in the ZIP
             if option == "All":
                 selected_files = class_files + teacher_files
                 zip_name       = "all_timetables.zip"
@@ -2404,7 +2344,6 @@ if menu == "Downloads" and is_admin:
 
         st.divider()
 
-        # ── Individual quick-download section ────────────────────────────────
         with st.expander("📄 Download individual class timetable PDF"):
             sec_dl = st.selectbox("Section", sorted(st.session_state.sections.keys()),
                                   key="dl_sec")
@@ -2422,3 +2361,209 @@ if menu == "Downloads" and is_admin:
                 with open(path,"rb") as f:
                     st.download_button("⬇ Download PDF", f, file_name=path,
                                        mime="application/pdf", key="dl_tch_dl")
+        st.markdown("### 📅 Day-wise Timetable")
+
+        selected_day = st.selectbox("Select Day", DAYS)
+
+        df_day = build_daywise_class_view(selected_day)
+
+        st.dataframe(df_day)
+
+        st.markdown("### 📚 Subject-wise Timetable")
+
+        group = st.selectbox("Select Subject Group", list(SUBJECT_GROUPS.keys()))
+
+        df_sub = build_subject_timetable(group)
+
+        st.dataframe(df_sub)
+########################### DAY WISE excel #############################
+
+def export_daywise_excel(day):
+    path = f"{day}_timetable.xlsx"
+
+    df = build_daywise_class_view(day)
+
+    # 🔥 Clean formatting (same as PDF)
+    new_data = []
+
+    for row in df.values:
+        new_row = []
+        for cell in row:
+            if isinstance(cell, str) and "(" in cell:
+                subject = cell.split("(")[0].strip()
+                teacher = cell.split("(")[1].replace(")", "")
+                short = teacher.split()[0][0] + "." + teacher.split()[-1]
+                new_row.append(f"{subject}\n({short})")
+            else:
+                new_row.append(cell)
+        new_data.append(new_row)
+
+    df_clean = pd.DataFrame(new_data, columns=df.columns)
+
+    # 🔥 Excel writer
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = day
+
+    # 🔥 HEADINGS (same as you wanted)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(df.columns))
+    ws.cell(row=1, column=1).value = "DHACSS PHASE IV CAMPUS"
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(df.columns))
+    ws.cell(row=2, column=1).value = "SENIOR SECTION TIMETABLE"
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=len(df.columns))
+    ws.cell(row=3, column=1).value = "SESSION 2026–27"
+
+    ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=len(df.columns))
+    ws.cell(row=4, column=1).value = day.upper()
+
+    # 🔥 Center align headings
+    for r in range(1,5):
+        cell = ws.cell(row=r, column=1)
+        cell.alignment = Alignment(horizontal="center")
+        cell.font = Font(bold=True)
+
+    # 🔥 Table start row
+    start_row = 6
+
+    # headers
+    for col, name in enumerate(df_clean.columns, 1):
+        ws.cell(row=start_row, column=col).value = name
+
+    # data
+    for i, row in enumerate(df_clean.values, start_row+1):
+        for j, val in enumerate(row, 1):
+            cell = ws.cell(row=i, column=j)
+            cell.value = val
+            cell.alignment = Alignment(wrap_text=True, horizontal="center", vertical="center")
+
+    # 🔥 Auto column width
+    from openpyxl.utils import get_column_letter
+
+    for col_num in range(1, ws.max_column + 1):
+        col_letter = get_column_letter(col_num)
+        max_len = 0
+
+        for row in range(1, ws.max_row + 1):
+            cell = ws.cell(row=row, column=col_num)
+            if cell.value:
+                max_len = max(max_len, len(str(cell.value)))
+
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 30)
+
+    wb.save(path)
+    return path
+if st.button("⬇ Download Day-wise Excel", use_container_width=True):
+    path = export_daywise_excel(selected_day)
+    with open(path, "rb") as f:
+        st.download_button(
+            label="📥 Click to Download Excel File",
+            data=f,
+            file_name=path,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+################## SUBJECT WISE PDF###################
+def export_subjectwise_excel(group):
+    path = f"{group}_timetable.xlsx"
+
+    df = build_subject_timetable(group)
+
+    # 🔥 Clean formatting (short teacher names + wrap)
+    new_data = []
+    for row in df.values:
+        new_row = []
+        for cell in row:
+            if isinstance(cell, str) and "(" in cell:
+                subject = cell.split("(")[0].strip()
+                teacher = cell.split("(")[1].replace(")", "")
+                short = teacher.split()[0][0] + "." + teacher.split()[-1]
+                new_row.append(f"{subject}\n({short})")
+            else:
+                new_row.append(cell)
+        new_data.append(new_row)
+
+    df_clean = pd.DataFrame(new_data, columns=df.columns)
+
+    # 🔥 Excel setup
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = group
+
+    total_cols = len(df_clean.columns)
+
+    # 🔥 HEADINGS
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    ws.cell(row=1, column=1).value = "DHACSS PHASE IV CAMPUS"
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=total_cols)
+    ws.cell(row=2, column=1).value = "SENIOR SECTION"
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=total_cols)
+    ws.cell(row=3, column=1).value = "SESSION 2026-27"
+
+    ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=total_cols)
+    ws.cell(row=4, column=1).value = f"SUBJECT ({group})"
+
+    # 🔥 Heading style
+    for r in range(1, 5):
+        cell = ws.cell(row=r, column=1)
+        cell.alignment = Alignment(horizontal="center")
+        cell.font = Font(bold=True)
+
+    # 🔥 Table start
+    start_row = 6
+
+    # headers
+    for col, name in enumerate(df_clean.columns, 1):
+        ws.cell(row=start_row, column=col).value = name
+
+    # data
+    for i, row in enumerate(df_clean.values, start_row + 1):
+        for j, val in enumerate(row, 1):
+            cell = ws.cell(row=i, column=j)
+            cell.value = val
+            cell.alignment = Alignment(
+                wrap_text=True,
+                horizontal="center",
+                vertical="center"
+            )
+
+    # 🔥 Column width fix (safe version)
+    for col_num in range(1, ws.max_column + 1):
+        col_letter = get_column_letter(col_num)
+        max_len = 0
+
+        for row in range(1, ws.max_row + 1):
+            cell = ws.cell(row=row, column=col_num)
+            if cell.value:
+                max_len = max(max_len, len(str(cell.value)))
+
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 30)
+
+    wb.save(path)
+    return path
+
+group = st.selectbox("Select Subject Group", list(SUBJECT_GROUPS.keys()))
+
+df_sub = build_subject_timetable(group)
+
+st.dataframe(df_sub)
+
+# 👇 ab safe hai
+path = export_subjectwise_excel(group)
+
+with open(path, "rb") as f:
+    st.download_button(
+        label="⬇ Download Subject-wise Excel",
+        data=f,
+        file_name=path,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )

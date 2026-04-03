@@ -1,4 +1,3 @@
-
 import streamlit as st
 st.set_page_config(page_title="School Scheduler Pro", layout="wide", page_icon="📚")
 
@@ -8,14 +7,6 @@ import sqlite3
 
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-
-try:
-    from openai import OpenAI as _OpenAI
-    _openai_key = os.getenv("OPENAI_API_KEY", "")
-    openai_client = _OpenAI(api_key=_openai_key) if _openai_key else None
-except ImportError:
-    openai_client = None
-
 from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.shared import Inches  # noqa: F401  (kept for compatibility)
@@ -24,6 +15,29 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
+
+def ask_ai(prompt):
+    if not openai_client:
+        return "API not connected"
+
+    response = openai_client.chat.completions.create(
+        model="moonshotai/Kimi-K2-Instruct-0905",
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    return response.choices[0].message.content
+import os
+os.environ["OPENAI_API_KEY"] = "hf_xxxxxxxxx"   # 👈 PEHLE
+
+from openai import OpenAI as _OpenAI
+_openai_key = os.getenv("OPENAI_API_KEY", "")
+
+openai_client = _OpenAI(
+    api_key=_openai_key,
+    base_url="https://router.huggingface.co/v1"
+) if _openai_key else None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS  (unchanged)
@@ -102,7 +116,18 @@ def get_periods(day):
     if day == "Friday":
         return ["P1","P2","P3","P4","Lunch","P5","P6"]
     return ["P1","P2","P3","P4","Lunch","P5","P6","P7","P8"]
+def ask_ai(prompt):
+    if not openai_client:
+        return "API not connected"
 
+    response = openai_client.chat.completions.create(
+        model="moonshotai/Kimi-K2-Instruct-0905",
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    return response.choices[0].message.content
 def get_time(day, period):
     if day in ("Monday","Tuesday","Wednesday"): return MON_WED_TIMES.get(period,"")
     if day == "Thursday":                       return THURSDAY_TIMES.get(period,"")
@@ -213,6 +238,19 @@ if not st.session_state.logged_in:
         margin: 0 0 22px; text-align: center;
     }
     .login-footer { text-align: center; color: #8fa8c8; font-size: 0.78rem; margin-top: 18px; }
+
+    /* ── MOBILE FIX: Login page responsive styles ── */
+    @media (max-width: 768px) {
+        .login-banner { padding: 28px 12px 14px; }
+        .login-banner h1 { font-size: 1.5rem !important; }
+        .login-banner p  { font-size: 0.9rem; }
+        .login-card {
+            padding: 28px 20px 24px;
+            margin: 14px 10px 0;
+            border-radius: 14px;
+        }
+    }
+    /* ── END MOBILE FIX ── */
     </style>
     <div class="login-banner">
         <h1>🏫 DHACSS Phase IV Campus</h1>
@@ -267,6 +305,7 @@ st.markdown("""
 html, body, [class*="css"] { font-family:'DM Sans',sans-serif !important; color:var(--text) !important; }
 [data-testid="stAppViewContainer"] { background:var(--bg) !important; }
 [data-testid="stMain"]             { background:var(--bg) !important; }
+[data-testid="stMain"] > div { padding-left: 1rem !important; padding-right: 1rem !important; }
 [data-testid="block-container"]    { padding-top:1.5rem !important; }
 h1,h2,h3,h4 { font-family:'Plus Jakarta Sans',sans-serif !important; color:var(--blue-800) !important; }
 h1 { font-size:1.65rem !important; font-weight:800 !important; letter-spacing:-0.3px; }
@@ -435,6 +474,186 @@ hr { border-color:var(--border) !important; margin:18px 0 !important; }
 }
 .dl-card h3 { margin:0 0 6px !important; font-size:1.05rem !important; }
 .dl-card p  { color:var(--muted); font-size:.875rem; margin:0 0 18px; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MOBILE FIX — All responsive overrides below. Desktop layout unchanged.
+   Target: screens ≤ 768px (phones & small tablets).
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+
+    /* MOBILE FIX: Reduce main container padding on small screens */
+    [data-testid="block-container"] {
+        padding-left: 0.6rem !important;
+        padding-right: 0.6rem !important;
+        padding-top: 0.8rem !important;
+    }
+
+    /* MOBILE FIX: App header — stack icon + text vertically, shrink fonts */
+    .app-header {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 10px !important;
+        padding: 14px 16px !important;
+        margin-bottom: 14px !important;
+        border-radius: 10px !important;
+    }
+    .app-header-icon {
+        width: 42px !important;
+        height: 42px !important;
+        font-size: 20px !important;
+    }
+    .app-header h1 {
+        font-size: 1.05rem !important;
+    }
+    .app-header p {
+        font-size: 0.75rem !important;
+    }
+
+    /* MOBILE FIX: Shrink heading sizes so they don't overflow */
+    h1 { font-size: 1.2rem !important; }
+    h2 { font-size: 1.05rem !important; }
+    h3 { font-size: 0.95rem !important; }
+
+    /* MOBILE FIX: Make all regular buttons full-width */
+    .stButton > button {
+        width: 100% !important;
+        font-size: 13px !important;
+        height: 3em !important;
+    }
+
+    /* MOBILE FIX: Make download buttons full-width */
+    [data-testid="stDownloadButton"] > button {
+        width: 100% !important;
+        font-size: 13px !important;
+    }
+
+    /* MOBILE FIX: DataFrames — enable horizontal scroll so table is not clipped */
+    [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        max-width: 100% !important;
+    }
+    [data-testid="stDataFrame"] > div {
+        overflow-x: auto !important;
+    }
+
+    /* MOBILE FIX: DataEditor (editable tables) — also scrollable */
+    [data-testid="stDataEditor"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        max-width: 100% !important;
+    }
+
+    /* MOBILE FIX: DataFrames — smaller cell fonts to fit more columns */
+    [data-testid="stDataFrame"] td {
+        font-size: 11px !important;
+        padding: 6px 8px !important;
+    }
+    [data-testid="stDataFrame"] th {
+        font-size: 10px !important;
+    }
+
+    /* MOBILE FIX: Metric cards — reduce padding & font size */
+    [data-testid="stMetric"] {
+        padding: 12px 14px !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.4rem !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 10px !important;
+    }
+
+    /* MOBILE FIX: Tabs — allow horizontal scroll if many tabs; shrink tab text */
+    [data-testid="stTabs"] [data-baseweb="tab-list"] {
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab"] {
+        font-size: 11.5px !important;
+        padding: 7px 10px !important;
+        white-space: nowrap !important;
+    }
+
+    /* MOBILE FIX: Sidebar — Streamlit renders it as an overlay on mobile
+       by default, so we just ensure its content text is readable */
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] div {
+        font-size: 13px !important;
+    }
+
+    /* MOBILE FIX: ui-card — tighter padding */
+    .ui-card {
+        padding: 14px 14px !important;
+    }
+
+    /* MOBILE FIX: dl-card (Downloads page) — tighter padding */
+    .dl-card {
+        padding: 16px 14px !important;
+    }
+
+    /* MOBILE FIX: Section/teacher banner cards inside Class View & Teacher View */
+    /* These are inline HTML divs — cap their padding and font size */
+    div[style*="border-radius:12px"][style*="padding:16px 24px"] {
+        padding: 12px 14px !important;
+    }
+
+    /* MOBILE FIX: Selectbox & text inputs — ensure they don't overflow */
+    [data-testid="stSelectbox"] > div > div,
+    [data-testid="stTextInput"] input,
+    [data-testid="stNumberInput"] input {
+        font-size: 13px !important;
+    }
+
+    /* MOBILE FIX: Slider — ensure label readable */
+    [data-testid="stSlider"] label {
+        font-size: 12px !important;
+    }
+
+    /* MOBILE FIX: Expander summary — slightly smaller text */
+    [data-testid="stExpander"] summary {
+        font-size: 13px !important;
+        padding: 10px 12px !important;
+    }
+
+    /* MOBILE FIX: Progress bar label */
+    [data-testid="stProgressBar"] + div {
+        font-size: 12px !important;
+    }
+
+    /* MOBILE FIX: Chip/badge spans (sections & teachers lists) — wrap nicely */
+    span[style*="display:inline-block"] {
+        font-size: 12px !important;
+        padding: 4px 10px !important;
+        margin: 2px !important;
+    }
+
+    /* MOBILE FIX: column gaps on very small screens —
+       Streamlit columns stack automatically below ~640px in most cases,
+       but we nudge spacing to avoid cramped buttons */
+    [data-testid="column"] {
+        padding-left: 4px !important;
+        padding-right: 4px !important;
+    }
+
+    /* MOBILE FIX: info / warning / success / error banners */
+    [data-testid="stInfo"],
+    [data-testid="stWarning"],
+    [data-testid="stSuccess"],
+    [data-testid="stError"] {
+        font-size: 13px !important;
+        padding: 10px 12px !important;
+    }
+
+    /* MOBILE FIX: Radio buttons (Downloads page option selector) */
+    [data-testid="stRadio"] label {
+        font-size: 13px !important;
+    }
+}
+/* ══ END MOBILE FIX ══════════════════════════════════════════════════════════ */
+
 </style>""", unsafe_allow_html=True)
 
 # App header
@@ -1122,9 +1341,21 @@ def calculate_fitness():
 # MISC HELPERS  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 def build_daywise_class_view(day):
-    data = []
     periods = get_periods(day)
 
+    data = []
+
+    # 🔽 FIRST ROW → TIMINGS
+    time_row = {"Class": "Time"}
+    for p in periods:
+        if p == "Lunch":
+            time_row["Break"] = ""
+        else:
+            time_row[p] = get_time(day, p)
+
+    data.append(time_row)
+
+    # 🔽 ACTUAL DATA
     for sec in st.session_state.timetable:
         row = {"Class": sec}
 
@@ -1134,12 +1365,11 @@ def build_daywise_class_view(day):
                 continue
 
             cell = slot(sec, day, p)
-            time = get_time(day, p)
 
             if cell["subject"]:
-                row[p] = f"{cell['subject']} ({cell['teacher']})\n{time}"
+                row[p] = f"{cell['subject']} ({cell['teacher']})"
             else:
-                row[p] = f"{time}"
+                row[p] = ""
 
         data.append(row)
 
@@ -1150,7 +1380,6 @@ def build_daywise_class_view(day):
         cols.insert(5, "Break")
 
     return df[cols]
-
 
 def export_daywise_excel(day):
     df = build_daywise_class_view(day)
@@ -1170,12 +1399,11 @@ def export_daywise_excel(day):
         for row in ["A1", "A2", "A3"]:
             ws[row].font = Font(bold=True, size=14)
 
-        # Merge heading across columns
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(df.columns))
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(df.columns))
         ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=len(df.columns))
 
-        # Header styling
+        # 🔽 HEADER STYLE
         header_fill = PatternFill("solid", fgColor="1F4E79")
         header_row = 6
 
@@ -1184,16 +1412,24 @@ def export_daywise_excel(day):
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # Borders + alignment
+        # 🔽 TIME ROW STYLE (IMPORTANT NEW)
+        time_row_index = header_row + 1
+
+        for cell in ws[time_row_index]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="D9E1F2")  # light blue
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # 🔽 BORDERS + ALIGNMENT
         thin = Side(style="thin")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-        for row in ws.iter_rows(min_row=header_row + 1):
+        for row in ws.iter_rows(min_row=header_row+1):
             for cell in row:
                 cell.border = border
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-        # Auto width
+        # 🔽 AUTO WIDTH
         for col in ws.columns:
             max_length = max(len(str(cell.value or "")) for cell in col)
             ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_length + 5, 35)
@@ -1451,7 +1687,7 @@ group = st.selectbox(
     key="main_group_select"
 )
 df_group = build_subject_timetable(group)
-st.dataframe(df_group)
+st.dataframe(df_group, use_container_width=True)  # MOBILE FIX: use_container_width=True
 # 📥 Subject-wise Excel Download
 file_name = f"{group}_Timetable.xlsx"
 
@@ -1610,7 +1846,7 @@ if menu == "Dashboard":
     </div>""", unsafe_allow_html=True)
 st.subheader("📊 Master Timetable")
 df_master = build_principal_matrix()
-st.dataframe(df_master)
+st.dataframe(df_master, use_container_width=True)  # MOBILE FIX: use_container_width=True
 group = st.selectbox("Select Subject Group", list(SUBJECT_GROUPS.keys()))
 
 df_group = build_subject_timetable(group)
@@ -2013,7 +2249,7 @@ if menu == "Teacher View":
             "Friday":        df_data["Friday"],
             "Fri Time":      [FRIDAY_TIMES.get(p,"")   for p in ALL_PERIODS],
         }).set_index("Period")
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, use_container_width=True)  # MOBILE FIX: use_container_width=True
 
         col1,col2=st.columns(2)
         with col1:
@@ -2072,7 +2308,7 @@ if menu == "Analytics":
             📋 School Master Timetable</div>""", unsafe_allow_html=True)
 
         df_master=build_principal_matrix()
-        st.dataframe(df_master, use_container_width=True)
+        st.dataframe(df_master, use_container_width=True)  # MOBILE FIX: use_container_width=True
 
         if not df_master.empty:
             if st.button("🤖 AI Analyze Timetable"):
@@ -2087,6 +2323,15 @@ if menu == "Analytics":
                 """, unsafe_allow_html=True)
                 st.markdown(result)
                 st.markdown("</div>", unsafe_allow_html=True)
+                # ===== CUSTOM AI INPUT =====
+                st.markdown("### 🤖 Ask AI Anything")
+
+                user_input = st.text_input("Type your instruction")
+
+                if st.button("Ask AI"):
+                    result = ask_ai(user_input)
+                    st.write(result)
+
 
         if not df_master.empty:
             col1,col2=st.columns(2)
