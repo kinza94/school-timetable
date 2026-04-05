@@ -76,6 +76,8 @@ BRAND_BLUE    = "#1f4e79"
 
 ADMIN_USERNAME  = "admin";  ADMIN_PASSWORD  = "Kinz@420"
 HEAD_USERNAME   = "head";   HEAD_PASSWORD   = "9999"
+
+VIEWER_USERNAME = "teacher"   # ✅ yeh add karo
 VIEWER_PASSWORD = "1234"
 
 SUBJECT_GROUPS = {
@@ -264,18 +266,25 @@ if not st.session_state.logged_in:
                 unsafe_allow_html=True)
 
     if login_btn:
-        if   username == ADMIN_USERNAME and password == ADMIN_PASSWORD:  role = "admin"
-        elif username == HEAD_USERNAME  and password == HEAD_PASSWORD:   role = "viewer"
-        elif clean(username) in st.session_state.teachers and password == VIEWER_PASSWORD:
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            role = "admin"
+
+        elif username == HEAD_USERNAME and password == HEAD_PASSWORD:
+            role = "viewer"  # ya "head" agar separate role chahte ho
+
+        elif username == VIEWER_USERNAME and password == VIEWER_PASSWORD:
             role = "viewer"
+
         else:
             role = None
+
         if role:
             st.session_state.logged_in = True
             st.session_state.role = role
             st.rerun()
         else:
             st.error("Invalid credentials.")
+
     st.stop()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2363,7 +2372,7 @@ if menu == "Downloads" and is_admin:
                                        mime="application/pdf", key="dl_tch_dl")
         st.markdown("### 📅 Day-wise Timetable")
 
-        selected_day = st.selectbox("Select Day", DAYS)
+        selected_day = st.selectbox("Select Day", DAYS, key="main_day_select")
 
         df_day = build_daywise_class_view(selected_day)
 
@@ -2378,6 +2387,10 @@ if menu == "Downloads" and is_admin:
         st.dataframe(df_sub)
 ########################### DAY WISE excel #############################
 
+
+if st.button("Export Day-wise Excel"):
+    path = export_daywise_excel(selected_day)
+    st.success(f"File saved at {path}")
 def export_daywise_excel(day):
     path = f"{day}_timetable.xlsx"
 
