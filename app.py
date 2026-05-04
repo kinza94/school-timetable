@@ -114,7 +114,36 @@ teacher_three_streak_count = {}
 # ══════════════════════════════════════════════════════════════════════════════
 # CORE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+def replace_with_other(sec_target, sec_source, day, period):
+    if period == "Lunch":
+        return False
 
+    tt = st.session_state.timetable
+
+    source_cell = tt[sec_source][day][period]
+    subj = source_cell["subject"]
+    teacher = source_cell["teacher"]
+
+    # Agar source empty hai → kuch nahi hoga
+    if not subj:
+        return False
+
+    # Step 1: Target (9D) ko empty karo
+    undo_assignment(sec_target, day, period)
+
+    # Step 2: Check assign ho sakta hai ya nahi
+    if not teacher_busy(teacher, day, period) and \
+       can_assign(sec_target, subj, teacher, day, period):
+
+        # Step 3: 8E ka lecture → 9D mein daal do
+        apply_assignment(sec_target, subj, teacher, day, period)
+
+        # Step 4: 8E ka period empty kar do
+        undo_assignment(sec_source, day, period)
+
+        return True
+
+    return False
 def clean(x):
     return str(x).strip().upper()
 def get_group(subject):
@@ -158,7 +187,17 @@ def build_subject_timetable(group_name):
             selected_teachers.append(teacher)
 
     return df[fixed_cols + selected_teachers]
+def add_new_section_timetable(section_name):
+    if section_name in st.session_state.timetable:
+        return
 
+    st.session_state.timetable[section_name] = {
+        day: {
+            p: {"subject": "", "teacher": ""}
+            for p in get_periods(day)
+        }
+        for day in DAYS
+    }
 # ══════════════════════════════════════════════════════════════════════════════
 # SESSION STATE  (single initialisation block)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -207,7 +246,9 @@ def load_all_data():
 if "data_loaded" not in st.session_state:
     load_all_data()
     st.session_state.data_loaded = True
-
+for sec in st.session_state.sections:
+    if sec not in st.session_state.timetable:
+        add_new_section_timetable(sec)
 # ══════════════════════════════════════════════════════════════════════════════
 # LOGIN
 # ══════════════════════════════════════════════════════════════════════════════
@@ -589,6 +630,13 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+st.markdown("### 🛠 Maintenance Tools")
+
+if st.button("➕ Fix Missing Sections"):
+    for sec in st.session_state.sections:
+        add_new_section_timetable(sec)
+
+    st.success("✅ All sections added to timetable")
 # ══════════════════════════════════════════════════════════════════════════════
 # VALIDATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -727,10 +775,10 @@ def get_last_teaching_period(day):
 
 DAILY_SINGLE_KEYWORDS = [
     "SINDHI","ISLAMIAT","ENGLISH","URDU","GENERAL SCIENCE",
-    "ARABIC","GEOGRAPHY","HISTORY","SOCIAL STUDIES",
+    "ARABIC","GEOGRAPHY","HISTORY","SOCIAL STUDIES","G.SC","ISLAMIAT-IX"
 ]
 IX_X_DOUBLE_SUBJECTS = [
-    "PHYSICS","CHEMISTRY","COMPUTER IX-X","COMPUTER SCIENCE IX-X",
+    "PHYSICS","COMPUTER IX-X","COMPUTER SCIENCE IX-X",
 ]
 MATH_KEYWORD  = "MATH"
 GAMES_KEYWORD = "GAMES"
@@ -1993,6 +2041,44 @@ if menu == "Class View":
             for iss in validate_teacher_max_load():      st.error(iss);   any_iss=True
             if not any_iss: st.success("No issues found.")
 
+st.markdown("### 🔁 Smart Replace (Class Swap Tool)")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    sec_target = st.selectbox(
+        "🎯 Target Class (jahan replace karna hai)",
+        list(st.session_state.timetable.keys()),
+        key="target_class"
+    )
+
+with col2:
+    sec_source = st.selectbox(
+        "🔄 Replace From (kis class se lena hai)",
+        list(st.session_state.timetable.keys()),
+        key="source_class"
+    )
+
+col3, col4 = st.columns(2)
+
+with col3:
+    day = st.selectbox("📅 Day", DAYS, key="swap_day")
+
+with col4:
+    period = st.selectbox("⏰ Period", get_periods(day), key="swap_period")
+
+# ACTION BUTTON
+if st.button("🚀 Replace Now"):
+    if sec_target == sec_source:
+        st.warning("⚠️ Same class select nahi kar sakte")
+    else:
+        success = replace_with_other(sec_target, sec_source, day, period)
+
+        if success:
+            fill_under_quota_subjects()
+            st.success(f"✅ {sec_source} → {sec_target} replace ho gaya ({day} {period})")
+        else:
+            st.error("❌ Replace possible nahi tha (constraint issue)")
 # ══════════════════════════════════════════════════════════════════════════════
 # TEACHER VIEW
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2177,6 +2263,17 @@ if menu == "Analytics":
             return text
 
 
+        def add_new_section_timetable(section_name):
+            if section_name in st.session_state.timetable:
+                return  # already exists
+
+            st.session_state.timetable[section_name] = {
+                day: {
+                    p: {"subject": "", "teacher": ""}
+                    for p in get_periods(day)
+                }
+                for day in DAYS
+            }
         # =========================
         # ✅ AI EXECUTION
         # =========================
@@ -2580,3 +2677,11 @@ with open(path, "rb") as f:
         file_name=path,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+if st.button("🔁 Replace 9D with 8E (Mon P3)"):
+    success = replace_with_other("9D", "8E", "Monday", "P3")
+
+    if success:
+        st.success("✅ Replace done")
+        fill_under_quota_subjects()
+    else:
+        st.error("❌ Replace failed")
